@@ -10,8 +10,8 @@ type BaseType = Int32
 type FnPointer = BaseType
 let baseSize = sizeof<BaseType>
 
-let inc (v:BaseType byref) = v <- v + 1
-let dec (v:BaseType byref) = v <- v - 1
+let inc (v:BaseType byref) count = v <- v + count
+let dec (v:BaseType byref) count = v <- v - count
 
 type Memory(memory : BaseType[]) =
     let mutable memoryTop = 0
@@ -24,6 +24,13 @@ type Memory(memory : BaseType[]) =
         let free = memoryTop
         memoryTop <- memoryTop + size
         free
+    member x.getByte offset : BaseType = 
+        let memoryBytes = MemoryMarshal.Cast<BaseType,byte>(new Span<BaseType>(memory))
+        int memoryBytes.[offset]
+    member x.setByte offset (v:BaseType) = 
+        let memoryBytes = MemoryMarshal.Cast<BaseType,byte>(new Span<BaseType>(memory))
+        memoryBytes.[offset] <- byte v 
+
 
 type Variable(memory:Memory)=
     let address = memory.reserveMemory 1
@@ -36,11 +43,11 @@ type Stack(memory : Memory, size:int)=
     member x.push v = 
         assert (sp < size)
         memory.set (sp + base_) v
-        inc &sp
+        inc &sp baseSize
     
     member x.pop () = 
         assert (sp <> 0)
-        dec &sp
+        dec &sp baseSize
         memory.get (sp + base_)
 
     member x.peek offset = memory.get (sp + base_ - offset)
@@ -117,13 +124,13 @@ let initCoreFuncs (s:ForthState) =
     
     let next () = 
         s.W <- s.IP
-        inc &s.IP
+        inc &s.IP baseSize
         s.memory.get s.W
     //alternative names: docolon, enter
     let nest () =
         s.RSP.push(s.IP)
         s.IP <- s.W
-        inc(&s.IP)
+        inc &s.IP baseSize
         next ()
     //alternative names: exit
     let unnest () =
@@ -259,5 +266,71 @@ let initCoreFuncs (s:ForthState) =
     def apply2 "XOR" (^^^) 
     def apply "INVERT" (~~~) 
     
+    let lit () =
+        s.W <- s.IP
+        inc &s.IP baseSize
+        s.memory.get(s.W) |> push
+    
+    s.defcode "!" Flags.NONE (fun () -> 
+        let address = pop()
+        let data = pop()
+        s.memory.set address data
+        next ()
+    )
+    s.defcode "@" Flags.NONE (fun () -> 
+        let address = pop()
+        let data = s.memory.get address 
+        push data
+        next ()
+    )
+    s.defcode "+!" Flags.NONE (fun () -> 
+        let address = pop()
+        let amount = pop()
+        s.memory.set address (s.memory.get address + amount)
+        next ()
+    )
+    s.defcode "-!" Flags.NONE (fun () -> 
+        let address = pop()
+        let amount = pop()
+        s.memory.set address (s.memory.get address - amount)
+        next ()
+    )
 
+    //! and @ (STORE and FETCH) store 32-bit words.  It's also useful to be able to read and write bytes
+    //so we also define standard words C@ and C!.
+    //Byte-oriented operations only work on architectures which permit them (i386 is one of those).
 
+    s.defcode "C!" Flags.NONE (fun () -> 
+        let address = pop()
+        let data = pop()
+        s.memory.setByte address data
+        next ()
+    )
+    s.defcode "C@" Flags.NONE (fun () -> 
+        let address = pop()
+        let data = s.memory.getByte address 
+        push data
+        next ()
+    )
+
+    // C@C! is a useful byte copy primitive. 
+    s.defcode "C@C!" Flags.NONE (fun () -> 
+        let destination = pop()
+        let source = pop()
+        s.memory.setByte destination <| s.memory.getByte source
+        push (source + 1)// increment source address
+        push (destination + 1)// increment destination address
+        next ()
+    )
+
+    // and CMOVE is a block copy operation. 
+    s.defcode "CMOVE" Flags.NONE (fun () -> 
+        let length = pop()
+        let destination = pop()
+        let source = pop()
+        for i in 0..length do
+            s.memory.setByte (destination + i) <| s.memory.getByte (source + i)
+        next ()
+    )
+    ()
+        
