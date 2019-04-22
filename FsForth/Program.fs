@@ -5,10 +5,7 @@ open System.Runtime.InteropServices
 
 [<EntryPoint>]
 let main argv =
-    
-    
-
-    let memory = new Span<byte>(Array.create (1<<<16) 0uy)
+    let memory = Forth.Memory(Array.create (1<<<16) 0)
     let state = Forth.ForthState(memory)
-
+    state.Run (fun fn -> 0)
     0 // return an integer exit code

@@ -10,121 +10,95 @@ type BaseType = Int32
 type FnPointer = BaseType
 let baseSize = sizeof<BaseType>
 
-if sizeof<nativeint> = baseSize |> not then failwith "not supported build mode, use x86"
-//type NativeFnDelegate = delegate of unit -> unit
-//let d = new NativeFnDelegate(f)
-//let pointer = Marshal.GetFunctionPointerForDelegate(f)
+let inc (v:BaseType byref) = v <- v + 1
+let dec (v:BaseType byref) = v <- v - 1
 
-type Memory(memory : byte[]) =
-    member x.getBase offset = 
-        let memoryInts = MemoryMarshal.Cast<byte,BaseType>(new Span<byte>(memory))
-        memoryInts.[offset]
-
+type Memory(memory : BaseType[]) =
+    let mutable memoryTop = 0
+    
     member x.get offset = memory.[offset]
 
     member x.set offset v = memory.[offset] <- v 
 
-    member x.setBase offset v = //offset in bytes
-        assert (offset % baseSize = 0)
-        let memoryInts = MemoryMarshal.Cast<byte,BaseType>(new Span<byte>(memory))
-        memoryInts.[offset] <- v 
+    member x.reserveMemory size = 
+        let free = memoryTop
+        memoryTop <- memoryTop + size
+        free
 
-type Register(init:BaseType)=
-    let mutable r = init;
-    member x.value = r
-    member x.set v = r <- v
-    member x.inc () = r <- r + baseSize
-    member x.dec () = r <- r - baseSize
+type Variable(memory:Memory)=
+    let address = memory.reserveMemory 1
+    member x.get () = memory.get address
+    member x.set v = memory.set address v
 
-type StackRegister(memory : Memory, base_:int, size:int)=
-    let mutable sp = Register(-1) //stack pointer
+type Stack(memory : Memory, size:int)=
+    let base_ = memory.reserveMemory size
+    let mutable sp = 0 //stack pointer
     member x.push v = 
-        assert (sp.value < size)
-        sp.inc()
-        memory.setBase (sp.value + base_) v
-
+        assert (sp < size)
+        memory.set (sp + base_) v
+        inc &sp
+    
     member x.pop () = 
-        assert (sp.value <> -1)
-        let v = memory.getBase (sp.value + base_)
-        sp.dec()
-        v
+        assert (sp <> 0)
+        dec &sp
+        memory.get (sp + base_)
+
+    member x.peek offset = memory.get (sp + base_ - offset)
+    
+    member x.apply f = x.peek 0 |> f |> memory.set (sp + base_)  
 
 [<Flags>]
 type Flags =
     | NONE = 0
     | IMMEDIATE = 0x80
     | HIDDEN = 0x20
+
 let LENMASK = 0x1f
 
-
-
-type ForthState(memory : byte[]) =
-    let mutable memoryTop = memory.Length - 1
-    let reserveMemory size = memoryTop <- memoryTop-(size * baseSize)
-                             memoryTop
-    //memory for main forth variables
-    let STATE : BaseType = reserveMemory 1//Is the interpreter executing code (0) or compiling a word (non-zero)?
-    let LATEST : BaseType = reserveMemory 1//Points to the latest (most recently defined) word in the dictionary.
-    let HERE : BaseType = reserveMemory 1//Points to the next free byte of memory.  When compiling, compiled words go here.
-    let S0 : BaseType = reserveMemory 1//Stores the address of the top of the parameter stack.
-    let BASE : BaseType = reserveMemory 1//The current base for printing and reading numbers.
+type Fn = unit -> FnPointer
+and CodeMemory()=
     //native funcs addressable storage
     let nativeFuncs : Fn[] = Array.zeroCreate (1<<<8) 
     let mutable nextFnPointer = 0
-    
-    //constant stack offsets
-    let spBase : BaseType = reserveMemory 256//offset of data stack
-    let rspBase : BaseType = reserveMemory 256//offset of return stack
-    //registers
-    [<DefaultValue>] val mutable IP : BaseType//istruction pointer in bytes
-    [<DefaultValue>] val mutable W : BaseType//work
-    [<DefaultValue>] val mutable SP : BaseType//data stack pointer
-    //[<DefaultValue>] val mutable RSP : BaseType//return data stack pointer
-    val SP 
-    let addFunction f = 
+
+    member x.addFunction f = 
         nativeFuncs.[nextFnPointer] <- f
         nextFnPointer <- nextFnPointer + 1
         nextFnPointer - 1
 
+    member x.get idx = nativeFuncs.[idx]
+
+and ForthState(memory : Memory) =
+    let code = CodeMemory()
+    //memory for main forth variables
+    let STATE = Variable(memory)//Is the interpreter executing code (0) or compiling a word (non-zero)?
+    let LATEST = Variable(memory)//Points to the latest (most recently defined) word in the dictionary.
+    let HERE = Variable(memory)//Points to the next free byte of memory.  When compiling, compiled words go here.
+    let S0 = Variable(memory)//Stores the address of the top of the parameter stack.
+    let BASE = Variable(memory)//The current base for printing and reading numbers.
     
+    let sp = Stack(memory, 256)//data stack
+    let rsp = Stack(memory, 256)//return stack
+
+    [<DefaultValue>] val mutable IP : BaseType//istruction pointer in bytes
+    [<DefaultValue>] val mutable W : BaseType//work
+
+    member x.memory = memory
+    member x.SP = sp
+    member x.RSP = rsp
+
+    member x.Run (fn:Fn) =  
+        let nextFn = fn ()
+        x.Run <| code.get nextFn
     
-    member x.pushSP v = 
-        incReg(&x.SP)
-        x.setMemory (x.SP + spBase) v
-
-    member x.popSP () = 
-        assert (x.SP <> 0)
-        let v = x.getMemory (x.SP + spBase)
-        decReg(&x.SP)
-        v
-
-    member x.pushRSP v = 
-        incReg(&x.RSP)
-        x.setMemory (x.RSP + rspBase) v
-
-    member x.popRSP () = 
-        assert (x.RSP <> 0)
-        let v = x.getMemory (x.RSP + rspBase)
-        decReg(&x.RSP)
-        v
-
-    member x.run (fn:Fn) =  
-        let nextFn = fn x
-        x.run <| nativeFuncs.[nextFn]
-    
-    member x.AddToDictionary (v:byte) = 
-        let pointer = x.getMemory HERE
-        memory.[pointer] <- v
-        x.setMemory HERE (pointer + 1)
-        
     member x.AddToDictionary (v:BaseType) = 
-        let pointer = x.getMemory HERE
-        x.setMemory pointer v
-        x.setMemory HERE (pointer + baseSize)
+        let pointer = HERE.get ()
+        memory.set pointer v
+        HERE.set (pointer + 1)
     
     //add forth word
     member x.defword (name: string) (flags:Flags) (code:BaseType[]) = 
-        let link = x.getMemory LATEST
+        let link = LATEST.get()
         let name = System.Text.Encoding.ASCII.GetBytes(name)
         let nameSize = byte name.Length
         ()
@@ -134,292 +108,156 @@ type ForthState(memory : byte[]) =
     //add variable
     member x.defvar (name: string) (flags:Flags) (varAddress:BaseType) = ()
 
-and Fn = ForthState -> FnPointer
+
 //VM core funcs
-let initCoreFuncs (state:ForthState) = 
-    let next (s:ForthState) = 
+let initCoreFuncs (s:ForthState) = 
+    let push = s.SP.push
+    let pop = s.SP.pop
+    let peek = s.SP.peek
+    
+    let next () = 
         s.W <- s.IP
-        incReg(&s.IP)
-        state.getMemory s.W
+        inc &s.IP
+        s.memory.get s.W
     //alternative names: docolon, enter
-    let nest (s:ForthState) =
-        s.pushRSP(s.IP)
+    let nest () =
+        s.RSP.push(s.IP)
         s.IP <- s.W
-        incReg(&s.IP)
-        next s
+        inc(&s.IP)
+        next ()
     //alternative names: exit
-    let unnest  (s:ForthState) =
-        state.IP <- state.popRSP()
-        next s
+    let unnest () =
+        s.IP <- s.RSP.pop()
+        next ()
 
-    state.defcode "DROP" Flags.NONE (fun s -> 
-        s.popSP() |> ignore
+    s.defcode "DROP" Flags.NONE (fun s -> 
+        pop() |> ignore
         next s
     ) 
 
-    state.defcode "SWAP" Flags.NONE (fun s -> 
-        let x = s.popSP()
-        let y = s.popSP()
-        s.pushSP(x)
-        s.pushSP(y)
+    s.defcode "SWAP" Flags.NONE (fun s -> 
+        let x = pop()
+        let y = pop()
+        push(x)
+        push(y)
         next s
     ) 
-    state.defcode "DUP" Flags.NONE (fun s -> 
-        let x = s.popSP()// duplicate top of stack
-        s.pushSP(x)
-        s.pushSP(x)
+    s.defcode "DUP" Flags.NONE (fun s -> 
+        push(peek 0)// duplicate top of stack
         next s
     ) 
-    state.defcode "OVER" Flags.NONE (fun s -> 
-        let sndElemAddr = s.SP - baseSize
-        assert sndElemAddr >= 0
-        x = s.getMemory ()// get the second element of stack
-        s.pushSP(x)// and push it on top
+    s.defcode "OVER" Flags.NONE (fun s -> 
+        push(peek 1)//get the second element of stack and push it on top
         next s
     ) 
-    state.defcode "ROT" Flags.NONE (fun s -> 
-        pop %eax
-        pop %ebx
-        pop %ecx
-        push %ebx
-        push %eax
-        push %ecx
+    //( a b c -- b c a )
+    s.defcode "ROT" Flags.NONE (fun s -> 
+        let eax = pop()
+        let ebx = pop()
+        let ecx = pop()
+        push ebx
+        push eax
+        push ecx
         next s
     ) 
-    state.defcode "-ROT" Flags.NONE (fun s -> 
-        pop %eax
-        pop %ebx
-        pop %ecx
-        push %eax
-        push %ecx
-        push %ebx
+    //( a b c -- c a b ) rot rot 
+    s.defcode "-ROT" Flags.NONE (fun s -> 
+        let eax = pop()
+        let ebx = pop()
+        let ecx = pop()
+        push eax
+        push ecx
+        push ebx
         next s
     ) 
+    //( a b -- ) drop drop ;
+    s.defcode "2DROP" Flags.NONE (fun s ->  // drop top two elements of stack
+        pop () |> ignore
+        pop () |> ignore
+        next s
+    ) 
+    //( a b -- a b a b ) over over ;
+    s.defcode "2DUP" Flags.NONE (fun s ->  // duplicate top two elements of stack
+        let b = peek 0
+        let a = peek 1
+        push a
+        push b
+        next s
+    ) 
+    //( d1 d2 — d2 d1 )
+    s.defcode "2SWAP" Flags.NONE (fun s ->  // swap top two pairs of elements of stack
+        let eax = pop ()
+        let ebx = pop ()
+        let ecx = pop ()
+        let edx = pop ()
+        push ebx
+        push eax
+        push edx
+        push ecx
+        next s
+    ) 
+
+    let apply = s.SP.apply
+    let apply2 (f: BaseType->BaseType->BaseType) = s.SP.apply (f <| pop())
+    let boolToBase b = if b then -1 else 0
     
-    state.defcode "2DROP" Flags.NONE (fun s ->  // drop top two elements of stack
-        pop %eax
-        pop %eax
+    let applyBool f = apply (fun a -> f a |> boolToBase)
+    let applyBool2 f = apply2 (fun a b -> f a b |> boolToBase)
+
+    let def applier name f= s.defcode name Flags.NONE (fun s -> 
+        applier f
         next s
     ) 
-    state.defcode "2DUP" Flags.NONE (fun s ->  // duplicate top two elements of stack
-        mov (%esp),%eax
-        mov 4(%esp),%ebx
-        push %ebx
-        push %eax
+
+    //( a -- a a | 0 ) dup if dup then 
+    //Duplicate x if it is non-zero. 
+    s.defcode "?DUP" Flags.NONE (fun s -> // duplicate top of stack if non-zero
+        let eax = peek 0
+        if eax <> 0 then push eax
         next s
     ) 
-    state.defcode "2SWAP" Flags.NONE (fun s ->  // swap top two pairs of elements of stack
-        pop %eax
-        pop %ebx
-        pop %ecx
-        pop %edx
-        push %ebx
-        push %eax
-        push %edx
-        push %ecx
-        next s
-    ) 
-    state.defcode "?DUP", Flags.NONE (fun s -> // duplicate top of stack if non-zero
-        movl (%esp),%eax
-        test %eax,%eax
-        jz 1f
-        push %eax
-        next s
-    ) 
-    state.defcode "1+" Flags.NONE (fun s -> 
-        incl (%esp)		// increment top of stack
-        next s
-    ) 
-    state.defcode "1-" Flags.NONE (fun s -> 
-        decl (%esp)		// decrement top of stack
-        next s
-    ) 
+    def apply "1+" <| (+) 1
+    def apply "1-" <| (-) 1
+    def apply "4+" <| (+) 4
+    def apply "4-" <| (-) 4
+    def apply2 "+" <| (+)
+    def apply2 "-" <| (-)
+    def apply2 "*" <| (*)
     
-    state.defcode "4+" Flags.NONE (fun s -> 
-        addl $4,(%esp)		// add 4 to top of stack
+    //( n1 n2 -- n3 n4 ) Divide n1 by n2, giving the single-cell remainder n3 and the single-cell quotient n4
+    s.defcode "/MOD" Flags.NONE (fun s -> 
+        let divisor = pop()
+        let dividend = pop()
+        let quotient, remainder = Math.DivRem(dividend, divisor)
+        push remainder// push remainder
+        push quotient// push quotient
         next s
     ) 
+
+    ////Lots of comparison operations like =, <, >, etc..
+    ////ANS FORTH says that the comparison words should return all (binary) 1's for
+    ////TRUE and all 0's for FALSE.  
+
+    //n1 n2 – f  
+    def applyBool2 "=" (=)
+    def applyBool2 "<>" (<>)
+    def applyBool2 "<" (<)
+    def applyBool2 ">" (>)
+    def applyBool2 "<=" (<=)
+    def applyBool2 ">=" (>=)
+    def applyBool2 ">" (>)
     
-    state.defcode "4-" Flags.NONE (fun s -> 
-        subl $4,(%esp)		// subtract 4 from top of stack
-        next s
-    ) 
+    def applyBool "0=" <| (=) 0
+    def applyBool "0<>" <| (<>) 0
+    def applyBool "0<" <| (<) 0
+    def applyBool "0>" <| (>) 0
+    def applyBool "0<=" <| (<=) 0
+    def applyBool "0>=" <| (>=) 0
     
-    state.defcode "+" Flags.NONE (fun s -> 
-        pop %eax		// get top of stack
-        addl %eax,(%esp)	// and add it to next word on stack
-        next s
-    ) 
+    def apply2 "AND" (&&&) 
+    def apply2 "OR" (|||) 
+    def apply2 "XOR" (^^^) 
+    def apply "INVERT" (~~~) 
     
-    state.defcode "-" Flags.NONE (fun s -> 
-        pop %eax		// get top of stack
-        subl %eax,(%esp)	// and subtract it from next word on stack
-        next s
-    ) 
-    
-    state.defcode "*" Flags.NONE (fun s -> 
-        pop %eax
-        pop %ebx
-        imull %ebx,%eax
-        push %eax		// ignore overflow
-        next s
-    ) 
-    
-    //In this FORTH, only /MOD is primitive.  Later we will define the / and MOD words in
-    //terms of the primitive /MOD.  The design of the i386 assembly instruction idiv which
-    //leaves both quotient and remainder makes this the obvious choice.
-    
-    state.defcode "/MOD" Flags.NONE (fun s -> 
-        xor %edx,%edx
-        pop %ebx
-        pop %eax
-        idivl %ebx
-        push %edx		// push remainder
-        push %eax		// push quotient
-        next s
-    ) 
-    
-    //Lots of comparison operations like =, <, >, etc..
-    
-    //ANS FORTH says that the comparison words should return all (binary) 1's for
-    //TRUE and all 0's for FALSE.  However this is a bit of a strange convention
-    //so this FORTH breaks it and returns the more normal (for C programmers ...)
-    //1 meaning TRUE and 0 meaning FALSE.
-    
-    state.defcode "=" Flags.NONE (fun s -> // top two words are equal?
-        pop %eax
-        pop %ebx
-        cmp %ebx,%eax
-        sete %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode "<>" Flags.NONE (fun s -> // top two words are not equal?
-        pop %eax
-        pop %ebx
-        cmp %ebx,%eax
-        setne %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode "<" Flags.NONE (fun s -> 
-        pop %eax
-        pop %ebx
-        cmp %eax,%ebx
-        setl %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode ">" Flags.NONE (fun s -> 
-        pop %eax
-        pop %ebx
-        cmp %eax,%ebx
-        setg %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode "<=" Flags.NONE (fun s -> 
-        pop %eax
-        pop %ebx
-        cmp %eax,%ebx
-        setle %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode ">=" Flags.NONE (fun s -> 
-        pop %eax
-        pop %ebx
-        cmp %eax,%ebx
-        setge %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode "0=" Flags.NONE (fun s -> // top of stack equals 0?
-        pop %eax
-        test %eax,%eax
-        setz %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode "0<>" Flags.NONE (fun s -> // top of stack not 0?
-        pop %eax
-        test %eax,%eax
-        setnz %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode "0<" Flags.NONE (fun s -> // comparisons with 0
-        pop %eax
-        test %eax,%eax
-        setl %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode "0>" Flags.NONE (fun s -> 
-        pop %eax
-        test %eax,%eax
-        setg %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode "0<=" Flags.NONE (fun s -> 
-        pop %eax
-        test %eax,%eax
-        setle %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode "0>=" Flags.NONE (fun s -> 
-        pop %eax
-        test %eax,%eax
-        setge %al
-        movzbl %al,%eax
-        pushl %eax
-        next s
-    ) 
-    
-    state.defcode "AND" Flags.NONE (fun s -> // bitwise AND
-        pop %eax
-        andl %eax,(%esp)
-        NEXT
-    
-    state.defcode "OR" Flags.NONE (fun s -> // bitwise OR
-        pop %eax
-        orl %eax,(%esp)
-        next s
-    ) 
-    
-    state.defcode "XOR" Flags.NONE (fun s -> // bitwise XOR
-        pop %eax
-        xorl %eax,(%esp)
-        next s
-    ) 
-    
-    state.defcode "INVERT" Flags.NONE (fun s -> // this is the FORTH bitwise "NOT" function (cf. NEGATE and NOT)
-        notl (%esp)
-        next s
-    ) 
 
 
