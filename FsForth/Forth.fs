@@ -5,6 +5,7 @@ open System
 open System.Runtime.InteropServices
 open System.Collections.Generic
 open System.Runtime.CompilerServices
+open System.Text
 
 type BaseType = Int32
 type FnPointer = BaseType
@@ -16,14 +17,28 @@ let dec (v:BaseType byref) count = v <- v - count
 type Memory(memory : BaseType[]) =
     let mutable memoryTop = 0
     
-    member x.get offset = memory.[offset]
+    member x.get offset = memory.[offset/baseSize]
 
-    member x.set offset v = memory.[offset] <- v 
+    member x.set offset v = memory.[offset/baseSize] <- v 
 
-    member x.reserveMemory size = 
+    member x.reserveMemoryBytes size = 
         let free = memoryTop
         memoryTop <- memoryTop + size
         free
+    member x.reserveMemory size = x.reserveMemoryBytes size * baseSize
+
+    member x.WriteByte (v:byte) = 
+        let address = x.reserveMemoryBytes 1
+        x.setByte address <| int v
+
+    member x.Write (v:BaseType) = 
+        let address = x.reserveMemory baseSize
+        x.setByte address <| v
+        
+    member x.WriteString (str:String) = Encoding.ASCII.GetBytes str |> Array.iter x.WriteByte 
+
+    member x.Align () = memoryTop <- memoryTop + memoryTop % baseSize 
+
     member x.getByte offset : BaseType = 
         let memoryBytes = MemoryMarshal.Cast<BaseType,byte>(new Span<BaseType>(memory))
         int memoryBytes.[offset]
@@ -62,52 +77,82 @@ type Flags =
 
 let LENMASK = 0x1f
 
-type Fn = unit -> FnPointer
-and CodeMemory()=
+
+
+type ForthVM(memory : Memory) =
+    //memory for main forth variables
+    member val STATE = Variable(memory)//Is the interpreter executing code (0) or compiling a word (non-zero)?
+    member val LATEST = Variable(memory)//Points to the latest (most recently defined) word in the dictionary.
+    member val HERE = Variable(memory)//Points to the next free byte of memory.  When compiling, compiled words go here.
+    member val S0 = Variable(memory)//Stores the address of the top of the parameter stack.
+    member val BASE = Variable(memory)//The current base for printing and reading numbers.
+    
+    member val SP = Stack(memory, 256)//data stack
+    member val RSP = Stack(memory, 256)//return stack
+    [<DefaultValue>] val mutable IP : BaseType//istruction pointer in bytes
+    [<DefaultValue>] val mutable W : BaseType//work
+    member x.memory = memory
+
+type Fn = ForthVM -> FnPointer
+
+type CodeMemory()=
     //native funcs addressable storage
     let nativeFuncs : Fn[] = Array.zeroCreate (1<<<8) 
     let mutable nextFnPointer = 0
-
-    member x.addFunction f = 
+    let addFn f = 
         nativeFuncs.[nextFnPointer] <- f
         nextFnPointer <- nextFnPointer + 1
         nextFnPointer - 1
 
+    let next (vm:ForthVM) = 
+        vm.W <- vm.IP
+        inc &vm.IP baseSize
+        vm.memory.get vm.W
+    let next = addFn next
+    //alternative names: docolon, enter
+    let nest (vm:ForthVM) = 
+        vm.RSP.push(vm.IP)
+        vm.IP <- vm.W
+        inc &vm.IP baseSize
+        next
+    let nest = addFn nest
+    //alternative names: exit
+    let unnest (vm:ForthVM) =
+        vm.IP <- vm.RSP.pop()
+        next
+
+    let unnest = addFn unnest
+
+    member x.NEXT = next
+    member x.NEST = nest
+    member x.UNNEST = unnest
+    member x.addFunction = addFn
+
     member x.get idx = nativeFuncs.[idx]
 
-and ForthState(memory : Memory) =
+type Forth(memory : BaseType[]) =
+    let memory = Memory(memory)
     let code = CodeMemory()
-    //memory for main forth variables
-    let STATE = Variable(memory)//Is the interpreter executing code (0) or compiling a word (non-zero)?
-    let LATEST = Variable(memory)//Points to the latest (most recently defined) word in the dictionary.
-    let HERE = Variable(memory)//Points to the next free byte of memory.  When compiling, compiled words go here.
-    let S0 = Variable(memory)//Stores the address of the top of the parameter stack.
-    let BASE = Variable(memory)//The current base for printing and reading numbers.
-    
-    let sp = Stack(memory, 256)//data stack
-    let rsp = Stack(memory, 256)//return stack
-
-    [<DefaultValue>] val mutable IP : BaseType//istruction pointer in bytes
-    [<DefaultValue>] val mutable W : BaseType//work
-
-    member x.memory = memory
-    member x.SP = sp
-    member x.RSP = rsp
+    let vm = ForthVM(memory)
 
     member x.Run (fn:Fn) =  
-        let nextFn = fn ()
+        let nextFn = fn vm
         x.Run <| code.get nextFn
     
-    member x.AddToDictionary (v:BaseType) = 
-        let pointer = HERE.get ()
-        memory.set pointer v
-        HERE.set (pointer + 1)
+    //member x.AddToDictionary (v:BaseType) = 
+    //    let pointer = vm.HERE.get ()
+    //    memory.set pointer v
+    //    vm.HERE.set (pointer + 1)
     
     //add forth word
     member x.defword (name: string) (flags:Flags) (code:BaseType[]) = 
-        let link = LATEST.get()
-        let name = System.Text.Encoding.ASCII.GetBytes(name)
+        let link = vm.LATEST.get()
         let nameSize = byte name.Length
+        let flags = byte flags
+        memory.Write(link)
+        nameSize + flags |> int |> memory.Write
+        memory.WriteString name
+        memory.Align()
         ()
     //add native word
     member x.defcode (name: string) (flags:Flags) (code:Fn) = 
@@ -117,111 +162,93 @@ and ForthState(memory : Memory) =
 
 
 //VM core funcs
-let initCoreFuncs (s:ForthState) = 
-    let push = s.SP.push
-    let pop = s.SP.pop
-    let peek = s.SP.peek
-    
-    let next () = 
-        s.W <- s.IP
-        inc &s.IP baseSize
-        s.memory.get s.W
-    //alternative names: docolon, enter
-    let nest () =
-        s.RSP.push(s.IP)
-        s.IP <- s.W
-        inc &s.IP baseSize
-        next ()
-    //alternative names: exit
-    let unnest () =
-        s.IP <- s.RSP.pop()
-        next ()
+let initCoreFuncs (defcode : string -> Flags -> Fn -> unit) next = 
 
-    s.defcode "DROP" Flags.NONE (fun s -> 
-        pop() |> ignore
-        next s
+    defcode "DROP" Flags.NONE (fun vm -> 
+        vm.SP.pop() |> ignore
+        next
     ) 
 
-    s.defcode "SWAP" Flags.NONE (fun s -> 
-        let x = pop()
-        let y = pop()
-        push(x)
-        push(y)
-        next s
+    defcode "SWAP" Flags.NONE (fun vm -> 
+        let x = vm.SP.pop()
+        let y = vm.SP.pop()
+        vm.SP.push(x)
+        vm.SP.push(y)
+        next
     ) 
-    s.defcode "DUP" Flags.NONE (fun s -> 
-        push(peek 0)// duplicate top of stack
-        next s
+    defcode "DUP" Flags.NONE (fun vm -> 
+        vm.SP.push(vm.SP.peek 0)// duplicate top of stack
+        next
     ) 
-    s.defcode "OVER" Flags.NONE (fun s -> 
-        push(peek 1)//get the second element of stack and push it on top
-        next s
+    defcode "OVER" Flags.NONE (fun vm -> 
+        vm.SP.push(vm.SP.peek 1)//get the second element of stack and push it on top
+        next
     ) 
     //( a b c -- b c a )
-    s.defcode "ROT" Flags.NONE (fun s -> 
-        let eax = pop()
-        let ebx = pop()
-        let ecx = pop()
-        push ebx
-        push eax
-        push ecx
-        next s
+    defcode "ROT" Flags.NONE (fun vm -> 
+        let eax = vm.SP.pop()
+        let ebx = vm.SP.pop()
+        let ecx = vm.SP.pop()
+        vm.SP.push ebx
+        vm.SP.push eax
+        vm.SP.push ecx
+        next 
     ) 
     //( a b c -- c a b ) rot rot 
-    s.defcode "-ROT" Flags.NONE (fun s -> 
-        let eax = pop()
-        let ebx = pop()
-        let ecx = pop()
-        push eax
-        push ecx
-        push ebx
-        next s
+    defcode "-ROT" Flags.NONE (fun vm -> 
+        let eax = vm.SP.pop()
+        let ebx = vm.SP.pop()
+        let ecx = vm.SP.pop()
+        vm.SP.push eax
+        vm.SP.push ecx
+        vm.SP.push ebx
+        next 
     ) 
     //( a b -- ) drop drop ;
-    s.defcode "2DROP" Flags.NONE (fun s ->  // drop top two elements of stack
-        pop () |> ignore
-        pop () |> ignore
-        next s
+    defcode "2DROP" Flags.NONE (fun vm ->  // drop top two elements of stack
+        vm.SP.pop () |> ignore
+        vm.SP.pop () |> ignore
+        next 
     ) 
     //( a b -- a b a b ) over over ;
-    s.defcode "2DUP" Flags.NONE (fun s ->  // duplicate top two elements of stack
-        let b = peek 0
-        let a = peek 1
-        push a
-        push b
-        next s
+    defcode "2DUP" Flags.NONE (fun vm ->  // duplicate top two elements of stack
+        let b = vm.SP.peek 0
+        let a = vm.SP.peek 1
+        vm.SP.push a
+        vm.SP.push b
+        next 
     ) 
     //( d1 d2 — d2 d1 )
-    s.defcode "2SWAP" Flags.NONE (fun s ->  // swap top two pairs of elements of stack
-        let eax = pop ()
-        let ebx = pop ()
-        let ecx = pop ()
-        let edx = pop ()
-        push ebx
-        push eax
-        push edx
-        push ecx
-        next s
+    defcode "2SWAP" Flags.NONE (fun vm ->  // swap top two pairs of elements of stack
+        let eax = vm.SP.pop ()
+        let ebx = vm.SP.pop ()
+        let ecx = vm.SP.pop ()
+        let edx = vm.SP.pop ()
+        vm.SP.push ebx
+        vm.SP.push eax
+        vm.SP.push edx
+        vm.SP.push ecx
+        next 
     ) 
 
-    let apply = s.SP.apply
-    let apply2 (f: BaseType->BaseType->BaseType) = s.SP.apply (f <| pop())
+    let apply (vm:ForthVM) = vm.SP.apply
+    let apply2 (vm:ForthVM) (f: BaseType->BaseType->BaseType)  = vm.SP.apply (f <| vm.SP.pop())
     let boolToBase b = if b then -1 else 0
     
-    let applyBool f = apply (fun a -> f a |> boolToBase)
-    let applyBool2 f = apply2 (fun a b -> f a b |> boolToBase)
+    let applyBool vm f  = apply vm (fun a -> f a |> boolToBase) 
+    let applyBool2 vm f  = apply2 vm (fun a b -> f a b |> boolToBase)
 
-    let def applier name f= s.defcode name Flags.NONE (fun s -> 
-        applier f
-        next s
+    let def applier name f= defcode name Flags.NONE (fun vm -> 
+        applier vm f 
+        next 
     ) 
 
     //( a -- a a | 0 ) dup if dup then 
     //Duplicate x if it is non-zero. 
-    s.defcode "?DUP" Flags.NONE (fun s -> // duplicate top of stack if non-zero
-        let eax = peek 0
-        if eax <> 0 then push eax
-        next s
+    defcode "?DUP" Flags.NONE (fun vm -> // duplicate top of stack if non-zero
+        let eax = vm.SP.peek 0
+        if eax <> 0 then vm.SP.push eax
+        next 
     ) 
     def apply "1+" <| (+) 1
     def apply "1-" <| (-) 1
@@ -232,13 +259,13 @@ let initCoreFuncs (s:ForthState) =
     def apply2 "*" <| (*)
     
     //( n1 n2 -- n3 n4 ) Divide n1 by n2, giving the single-cell remainder n3 and the single-cell quotient n4
-    s.defcode "/MOD" Flags.NONE (fun s -> 
-        let divisor = pop()
-        let dividend = pop()
+    defcode "/MOD" Flags.NONE (fun vm -> 
+        let divisor = vm.SP.pop()
+        let dividend = vm.SP.pop()
         let quotient, remainder = Math.DivRem(dividend, divisor)
-        push remainder// push remainder
-        push quotient// push quotient
-        next s
+        vm.SP.push remainder// push remainder
+        vm.SP.push quotient// push quotient
+        next 
     ) 
 
     ////Lots of comparison operations like =, <, >, etc..
@@ -266,71 +293,72 @@ let initCoreFuncs (s:ForthState) =
     def apply2 "XOR" (^^^) 
     def apply "INVERT" (~~~) 
     
-    let lit () =
-        s.W <- s.IP
-        inc &s.IP baseSize
-        s.memory.get(s.W) |> push
-    
-    s.defcode "!" Flags.NONE (fun () -> 
-        let address = pop()
-        let data = pop()
-        s.memory.set address data
-        next ()
+    defcode "LIT" Flags.NONE (fun vm ->
+        vm.W <- vm.IP
+        inc &vm.IP baseSize
+        vm.memory.get(vm.W) |> vm.SP.push
+        next
     )
-    s.defcode "@" Flags.NONE (fun () -> 
-        let address = pop()
-        let data = s.memory.get address 
-        push data
-        next ()
+    defcode "!" Flags.NONE (fun vm -> 
+        let address = vm.SP.pop()
+        let data = vm.SP.pop()
+        vm.memory.set address data
+        next 
     )
-    s.defcode "+!" Flags.NONE (fun () -> 
-        let address = pop()
-        let amount = pop()
-        s.memory.set address (s.memory.get address + amount)
-        next ()
+    defcode "@" Flags.NONE (fun vm -> 
+        let address = vm.SP.pop()
+        let data = vm.memory.get address 
+        vm.SP.push data
+        next 
     )
-    s.defcode "-!" Flags.NONE (fun () -> 
-        let address = pop()
-        let amount = pop()
-        s.memory.set address (s.memory.get address - amount)
-        next ()
+    defcode "+!" Flags.NONE (fun vm -> 
+        let address = vm.SP.pop()
+        let amount = vm.SP.pop()
+        vm.memory.set address (vm.memory.get address + amount)
+        next 
+    )
+    defcode "-!" Flags.NONE (fun vm -> 
+        let address = vm.SP.pop()
+        let amount = vm.SP.pop()
+        vm.memory.set address (vm.memory.get address - amount)
+        next 
     )
 
     //! and @ (STORE and FETCH) store 32-bit words.  It's also useful to be able to read and write bytes
     //so we also define standard words C@ and C!.
     //Byte-oriented operations only work on architectures which permit them (i386 is one of those).
 
-    s.defcode "C!" Flags.NONE (fun () -> 
-        let address = pop()
-        let data = pop()
-        s.memory.setByte address data
-        next ()
+    defcode "C!" Flags.NONE (fun vm -> 
+        let address = vm.SP.pop()
+        let data = vm.SP.pop()
+        vm.memory.setByte address data
+        next 
     )
-    s.defcode "C@" Flags.NONE (fun () -> 
-        let address = pop()
-        let data = s.memory.getByte address 
-        push data
-        next ()
+    defcode "C@" Flags.NONE (fun vm -> 
+        let address = vm.SP.pop()
+        let data = vm.memory.getByte address 
+        vm.SP.push data
+        next 
     )
 
     // C@C! is a useful byte copy primitive. 
-    s.defcode "C@C!" Flags.NONE (fun () -> 
-        let destination = pop()
-        let source = pop()
-        s.memory.setByte destination <| s.memory.getByte source
-        push (source + 1)// increment source address
-        push (destination + 1)// increment destination address
-        next ()
+    defcode "C@C!" Flags.NONE (fun vm -> 
+        let destination = vm.SP.pop()
+        let source = vm.SP.pop()
+        vm.memory.setByte destination <| vm.memory.getByte source
+        vm.SP.push (source + 1)// increment source address
+        vm.SP.push (destination + 1)// increment destination address
+        next
     )
 
     // and CMOVE is a block copy operation. 
-    s.defcode "CMOVE" Flags.NONE (fun () -> 
-        let length = pop()
-        let destination = pop()
-        let source = pop()
+    defcode "CMOVE" Flags.NONE (fun vm -> 
+        let length = vm.SP.pop()
+        let destination = vm.SP.pop()
+        let source = vm.SP.pop()
         for i in 0..length do
-            s.memory.setByte (destination + i) <| s.memory.getByte (source + i)
-        next ()
+            vm.memory.setByte (destination + i) <| vm.memory.getByte (source + i)
+        next 
     )
     ()
         
