@@ -50,25 +50,30 @@ type Memory(memory : BaseType[]) =
 
 type Variable(memory:Memory, initial: BaseType)=
     let addr = memory.reserveMemory 1
-    memory.set addr initial
+    do
+        memory.set addr initial
     member x.address = addr
     member x.get () = memory.get addr
     member x.set v = memory.set addr v
 
 type Stack(memory : Memory, size:int)=
-    let base_ = memory.reserveMemory size
+    let sizeInBytes = size * baseSize
+    let base_ = memory.reserveMemory size + sizeInBytes//growind backward
     let mutable sp = 0 //stack pointer
+    member x.top = base_ + sp
+    member x.S0 = base_
     member x.push v = 
-        assert (sp < size)
-        memory.set (sp + base_) v
-        inc &sp baseSize
+        assert (sp < sizeInBytes)
+        dec &sp baseSize
+        memory.set x.top v
     
     member x.pop () = 
-        assert (sp <> 0)
-        dec &sp baseSize
-        memory.get (sp + base_)
+        assert (sp > 0)
+        let v = memory.get x.top
+        inc &sp baseSize
+        v
 
-    member x.peek offset = memory.get (sp + base_ - offset)
+    member x.peek offset = memory.get (sp + base_ - (offset * baseSize))
     
     member x.apply f = x.peek 0 |> f |> memory.set (sp + base_)  
 
@@ -80,6 +85,7 @@ type ForthVM(memory : Memory) =
     member val LATEST = Variable(memory, 0)//Points to the latest (most recently defined) word in the dictionary.
     member val HERE = Variable(memory, 0)//Points to the next free byte of memory.  When compiling, compiled words go here.
     member val S0 = Variable(memory, 0)//Stores the address of the top of the parameter stack.
+    member val R0 = Variable(memory, 0)//Stores the address of the top of the parameter stack.
     member val BASE = Variable(memory, 10)//The current base for printing and reading numbers.
     
     member val SP = Stack(memory, 256)//data stack
@@ -389,29 +395,62 @@ type Forth(memory : BaseType[]) =
         x.defvar "STATE" Flags.NONE vm.STATE.address Option.None
         x.defvar "HERE" Flags.NONE vm.HERE.address Option.None
         x.defvar "LATEST" Flags.NONE vm.LATEST.address Option.None //name_SYSCALL0 // SYSCALL0 must be last in built-in dictionary
-        x.defvar "S0" Flags.NONE  vm.S0.address Option.None
+        x.defvar "S0" Flags.NONE vm.S0.address Option.None
         x.defvar "BASE" Flags.NONE vm.BASE.address Option.None
         
-        x.defconst "VERSION",7,,VERSION,JONES_VERSION
-        x.defconst "R0",2,,RZ,return_stack_top
-        x.defconst "DOCOL",5,,__DOCOL,DOCOL
-        x.defconst "F_IMMED",7,,__F_IMMED,F_IMMED
-        x.defconst "F_HIDDEN",8,,__F_HIDDEN,F_HIDDEN
-        x.defconst "F_LENMASK",9,,__F_LENMASK,F_LENMASK
+        x.defconst "VERSION" Flags.NONE 1
+        x.defconst "R0" Flags.NONE vm.R0.address
+        x.defconst "DOCOL" Flags.NONE code.NEST
+        x.defconst "F_IMMED" Flags.NONE <| int Flags.IMMEDIATE
+        x.defconst "F_HIDDEN" Flags.NONE <| int Flags.HIDDEN
+        x.defconst "F_LENMASK" Flags.NONE LENMASK
         
-        x.defconst "SYS_EXIT",8,,SYS_EXIT,__NR_exit
-        x.defconst "SYS_OPEN",8,,SYS_OPEN,__NR_open
-        x.defconst "SYS_CLOSE",9,,SYS_CLOSE,__NR_close
-        x.defconst "SYS_READ",8,,SYS_READ,__NR_read
-        x.defconst "SYS_WRITE",9,,SYS_WRITE,__NR_write
-        x.defconst "SYS_CREAT",9,,SYS_CREAT,__NR_creat
-        x.defconst "SYS_BRK",7,,SYS_BRK,__NR_brk
+        //x.defconst "SYS_EXIT",8,,SYS_EXIT,__NR_exit
+        //x.defconst "SYS_OPEN",8,,SYS_OPEN,__NR_open
+        //x.defconst "SYS_CLOSE",9,,SYS_CLOSE,__NR_close
+        //x.defconst "SYS_READ",8,,SYS_READ,__NR_read
+        //x.defconst "SYS_WRITE",9,,SYS_WRITE,__NR_write
+        //x.defconst "SYS_CREAT",9,,SYS_CREAT,__NR_creat
+        //x.defconst "SYS_BRK",7,,SYS_BRK,__NR_brk
         
-        x.defconst "O_RDONLY",8,,__O_RDONLY,0
-        x.defconst "O_WRONLY",8,,__O_WRONLY,1
-        x.defconst "O_RDWR",6,,__O_RDWR,2
-        x.defconst "O_CREAT",7,,__O_CREAT,0100
-        x.defconst "O_EXCL",6,,__O_EXCL,0200
-        x.defconst "O_TRUNC",7,,__O_TRUNC,01000
-        x.defconst "O_APPEND",8,,__O_APPEND,02000
-        x.defconst "O_NONBLOCK",10,,__O_NONBLOCK,04000
+        //x.defconst "O_RDONLY",8,,__O_RDONLY,0
+        //x.defconst "O_WRONLY",8,,__O_WRONLY,1
+        //x.defconst "O_RDWR",6,,__O_RDWR,2
+        //x.defconst "O_CREAT",7,,__O_CREAT,0100
+        //x.defconst "O_EXCL",6,,__O_EXCL,0200
+        //x.defconst "O_TRUNC",7,,__O_TRUNC,01000
+        //x.defconst "O_APPEND",8,,__O_APPEND,02000
+        //x.defconst "O_NONBLOCK",10,,__O_NONBLOCK,04000
+
+        //RETURN STACK ----------------------------------------------------------------------
+        x.defcode ">R" Flags.NONE (fun vm -> 
+            vm.SP.pop() |> vm.RSP.push
+            code.NEXT 
+        )
+        x.defcode "R>" Flags.NONE (fun vm -> 
+            vm.RSP.pop() |> vm.SP.push
+            code.NEXT 
+        )
+        x.defcode "RSP@" Flags.NONE (fun vm -> 
+            vm.SP.push %ebp
+            code.NEXT 
+        )
+        x.defcode "RSP!" Flags.NONE (fun vm -> 
+            vm.SP.pop %ebp
+            code.NEXT 
+        )
+        x.defcode "RDROP" Flags.NONE (fun vm -> 
+            vm.RSP.pop()|> ignore
+            code.NEXT 
+        )
+        //PARAMETER (DATA) STACK ----------------------------------------------------------------------
+        x.defcode "DSP@" Flags.NONE (fun vm -> 
+            mov %esp,%eax
+            vm.SP.push %eax
+            code.NEXT 
+        )
+        
+        x.defcode "DSP!" Flags.NONE (fun vm -> 
+            vm.SP.pop %esp
+            code.NEXT 
+        )
