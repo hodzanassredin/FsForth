@@ -16,11 +16,15 @@ let dec (v:BaseType byref) count = v <- v - count
 
 type Memory(memory : BaseType[]) =
     let mutable memoryTop = 0
+    let asByteSpan () = MemoryMarshal.Cast<BaseType,byte>(new Span<BaseType>(memory))
+    
     member x.HERE = memoryTop
 
     member x.get offset = memory.[offset/baseSize]
 
     member x.set offset v = memory.[offset/baseSize] <- v 
+
+    member x.copyBytes offset (arr:byte array) = arr.CopyTo(asByteSpan().Slice(offset, arr.Length) )
 
     member x.reserveMemoryBytes size = 
         let free = memoryTop
@@ -39,12 +43,11 @@ type Memory(memory : BaseType[]) =
     member x.WriteString (str:String) = Encoding.ASCII.GetBytes str |> Array.iter x.WriteByte 
 
     member x.Align () = memoryTop <- memoryTop + memoryTop % baseSize 
-
     member x.getByte offset : BaseType = 
-        let memoryBytes = MemoryMarshal.Cast<BaseType,byte>(new Span<BaseType>(memory))
+        let memoryBytes = asByteSpan ()
         int memoryBytes.[offset]
     member x.setByte offset (v:BaseType) = 
-        let memoryBytes = MemoryMarshal.Cast<BaseType,byte>(new Span<BaseType>(memory))
+        let memoryBytes = asByteSpan ()
         memoryBytes.[offset] <- byte v 
 
 
@@ -56,26 +59,46 @@ type Variable(memory:Memory, initial: BaseType)=
     member x.get () = memory.get addr
     member x.set v = memory.set addr v
 
+type Buffer(memory : Memory, BUFFER_SIZE:int)=
+    let buffer = memory.reserveMemoryBytes BUFFER_SIZE
+    let mutable bufftop = 0 //buffer pointer
+    let mutable currkey  = 0 //next character to read
+
+    let get () = 
+        if currkey < bufftop 
+        then let v = memory.getByte currkey
+             currkey <- currkey + 1
+             v
+        else let chars = Array.create BUFFER_SIZE ' '
+             bufftop <- Console.In.ReadBlock(chars, 0, BUFFER_SIZE)
+             let ascii = Encoding.ASCII.GetBytes(chars, 0, bufftop)
+             memory.copyBytes buffer ascii
+
+            
+
 type Stack(memory : Memory, size:int)=
     let sizeInBytes = size * baseSize
-    let base_ = memory.reserveMemory size + sizeInBytes//growind backward
-    let mutable sp = 0 //stack pointer
-    member x.top = base_ + sp
-    member x.S0 = base_
+    let low = memory.reserveMemory size//growind backward
+    let high = low + sizeInBytes
+    let mutable sp = high //stack pointer
+    member x.top 
+        with get () = sp
+        and set (value) = sp <- value
+    member x.S0 = high
     member x.push v = 
-        assert (sp < sizeInBytes)
+        assert (sp > low)
         dec &sp baseSize
-        memory.set x.top v
+        memory.set sp v
     
     member x.pop () = 
-        assert (sp > 0)
-        let v = memory.get x.top
+        assert (sp < high)
+        let v = memory.get sp
         inc &sp baseSize
         v
 
-    member x.peek offset = memory.get (sp + base_ - (offset * baseSize))
+    member x.peek offset = memory.get (sp - (offset * baseSize))
     
-    member x.apply f = x.peek 0 |> f |> memory.set (sp + base_)  
+    member x.apply f = x.peek 0 |> f |> memory.set sp 
 
 
 
@@ -431,12 +454,14 @@ type Forth(memory : BaseType[]) =
             vm.RSP.pop() |> vm.SP.push
             code.NEXT 
         )
+        //get return stack pointer
         x.defcode "RSP@" Flags.NONE (fun vm -> 
-            vm.SP.push %ebp
+            vm.SP.push vm.RSP.top
             code.NEXT 
         )
+        //set return stack pointer
         x.defcode "RSP!" Flags.NONE (fun vm -> 
-            vm.SP.pop %ebp
+            vm.RSP.top <- vm.SP.pop()
             code.NEXT 
         )
         x.defcode "RDROP" Flags.NONE (fun vm -> 
@@ -444,13 +469,18 @@ type Forth(memory : BaseType[]) =
             code.NEXT 
         )
         //PARAMETER (DATA) STACK ----------------------------------------------------------------------
+        //get data stack pointer
         x.defcode "DSP@" Flags.NONE (fun vm -> 
-            mov %esp,%eax
-            vm.SP.push %eax
+            vm.SP.push vm.SP.top
             code.NEXT 
         )
-        
+        //set data stack pointer
         x.defcode "DSP!" Flags.NONE (fun vm -> 
-            vm.SP.pop %esp
+            vm.SP.top <- vm.SP.pop()
+            code.NEXT 
+        )
+
+        x.defcode "DSP!" Flags.NONE (fun vm -> 
+            vm.SP.top <- vm.SP.pop()
             code.NEXT 
         )
