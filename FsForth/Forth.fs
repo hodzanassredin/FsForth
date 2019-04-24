@@ -24,8 +24,8 @@ type Memory(memory : BaseType[]) =
 
     member x.set offset v = memory.[offset/baseSize] <- v 
 
-    member x.copyBytes offset (arr:byte array) = arr.CopyTo(asByteSpan().Slice(offset, arr.Length) )
-
+    member x.copyFromBytes offset (arr:byte array) = arr.CopyTo(asByteSpan().Slice(offset, arr.Length) )
+    member x.getBytes offset length = asByteSpan().Slice(offset, length).ToArray()
     member x.reserveMemoryBytes size = 
         let free = memoryTop
         memoryTop <- memoryTop + size
@@ -59,22 +59,49 @@ type Variable(memory:Memory, initial: BaseType)=
     member x.get () = memory.get addr
     member x.set v = memory.set addr v
 
-type Buffer(memory : Memory, BUFFER_SIZE:int)=
+type StringBuffer(memory : Memory, BUFFER_SIZE:int)=
     let buffer = memory.reserveMemoryBytes BUFFER_SIZE
-    let mutable bufftop = 0 //buffer pointer
-    let mutable currkey  = 0 //next character to read
+    let mutable bufftop = buffer //buffer pointer
+    member x.address = buffer
+    member x.length = bufftop - buffer 
+    member x.reset () = bufftop <- buffer
+    member x.write c = memory.setByte bufftop c
+                       inc &bufftop 1
 
-    let get () = 
+type InputBuffer(memory : Memory, BUFFER_SIZE:int)=
+    let buffer = memory.reserveMemoryBytes BUFFER_SIZE
+    let mutable bufftop = buffer //buffer pointer
+    let mutable currkey  = buffer //next character to read
+
+    member x.get () = 
         if currkey < bufftop 
         then let v = memory.getByte currkey
              currkey <- currkey + 1
              v
         else let chars = Array.create BUFFER_SIZE ' '
-             bufftop <- Console.In.ReadBlock(chars, 0, BUFFER_SIZE)
-             let ascii = Encoding.ASCII.GetBytes(chars, 0, bufftop)
-             memory.copyBytes buffer ascii
+             let count = Console.In.ReadBlock(chars, 0, BUFFER_SIZE)
+             if count<= 0 then failwith "exit"
+             else bufftop <- buffer + count
+                  currkey <- 0
+                  let ascii = Encoding.ASCII.GetBytes(chars, 0, count)
+                  memory.copyFromBytes buffer ascii
+                  x.get ()
 
-            
+type OutputBuffer(memory : Memory, BUFFER_SIZE:int)=
+    let buffer = memory.reserveMemoryBytes BUFFER_SIZE
+    let mutable currkey = buffer //next character to write
+
+    member x.flush() =
+        let span = memory.getBytes buffer (currkey-buffer)
+        let string = Encoding.ASCII.GetString(span);
+        Console.Out.Write(string)
+        Console.Out.Flush()
+        currkey<-0
+
+    member x.set c = 
+        if currkey >= buffer + BUFFER_SIZE then x.flush()
+        let v = memory.setByte currkey
+        currkey <- currkey + 1
 
 type Stack(memory : Memory, size:int)=
     let sizeInBytes = size * baseSize
@@ -110,9 +137,13 @@ type ForthVM(memory : Memory) =
     member val S0 = Variable(memory, 0)//Stores the address of the top of the parameter stack.
     member val R0 = Variable(memory, 0)//Stores the address of the top of the parameter stack.
     member val BASE = Variable(memory, 10)//The current base for printing and reading numbers.
-    
     member val SP = Stack(memory, 256)//data stack
     member val RSP = Stack(memory, 256)//return stack
+    member val Input = InputBuffer(memory, 4096)//stdin
+    member val Output = OutputBuffer(memory, 4096)//stdout
+    member val WordBuffer = StringBuffer(memory, 32)//words storage
+    
+    
     [<DefaultValue>] val mutable IP : BaseType//istruction pointer in bytes
     [<DefaultValue>] val mutable W : BaseType//work
     member x.memory = memory
@@ -161,7 +192,7 @@ type Flags =
     | HIDDEN = 0x20
 
 let LENMASK = 0x1f
-
+type ReadMode = SKIP|WORD|COMMENT
 type Forth(memory : BaseType[]) =
     let memory = Memory(memory)
     let code = CodeMemory()
@@ -484,3 +515,63 @@ type Forth(memory : BaseType[]) =
             vm.SP.top <- vm.SP.pop()
             code.NEXT 
         )
+        //io
+        x.defcode "KEY" Flags.NONE (fun vm -> 
+            vm.SP.push <| vm.Input.get()
+            code.NEXT 
+        )
+        x.defcode "EMIT" Flags.NONE (fun vm -> 
+            vm.SP.pop() |> vm.Output.set
+            code.NEXT 
+        )
+        
+        let rec readWord mode =
+            let c = vm.Input.get() 
+            match (char c,mode) with
+                | ('\n', ReadMode.COMMENT) -> readWord ReadMode.SKIP
+                | (_, ReadMode.COMMENT) -> readWord ReadMode.COMMENT
+                | (c, ReadMode.SKIP) when c = ' ' || c = '\t' -> readWord ReadMode.SKIP
+                | (c, ReadMode.WORD) when c = ' ' || c = '\t' -> (vm.WordBuffer.address, vm.WordBuffer.length)
+                | ('/', ReadMode.SKIP) -> readWord ReadMode.COMMENT
+                | (_, _) -> vm.WordBuffer.write c
+                            readWord ReadMode.WORD
+
+        x.defcode "WORD" Flags.NONE (fun vm -> 
+            let addr, len = readWord ReadMode.SKIP
+            vm.SP.push addr
+            vm.SP.push len
+            code.NEXT 
+        )
+
+        let parseNumber address length = 
+            let radix = vm.BASE.get()
+            let mutable n = 0
+            let mutable idx = 0
+
+            let next() = let c = vm.memory.getByte address 
+                         idx <- idx + 1
+                         c
+
+            let mutable c = next()
+            let isNegative = '-' = char c
+            if isNegative then c <- next()
+            let mutable cnt = true
+            while cnt do
+                n <- n * radix
+                let d = next() - int '0'
+                if d > radix then cnt <- false
+                else n <- n + d * radix
+                cnt <- idx < length
+            
+            let count = if length = 0 then 0 else length - idx
+
+            if isNegative then -n, count else n, count
+
+        x.defcode "NUMBER" Flags.NONE (fun vm -> 
+            let len, addr = vm.SP.pop(), vm.SP.pop()
+            let number, numberOfUnparsedChars = parseNumber addr len
+            vm.SP.push number
+            vm.SP.push numberOfUnparsedChars // 0 if no error
+            code.NEXT 
+        )
+        
