@@ -10,6 +10,7 @@ open System.Text
 type BaseType = Int32
 type FnPointer = BaseType
 let baseSize = sizeof<BaseType>
+let pad address = (address + (baseSize-1)) &&& ~~~(baseSize-1)//same as address + (baseSize - (string_length % baseSize)) % baseSize
 
 let inc (v:BaseType byref) count = v <- v + count
 let dec (v:BaseType byref) count = v <- v - count
@@ -42,7 +43,7 @@ type Memory(memory : BaseType[]) =
         
     member x.WriteString (str:String) = Encoding.ASCII.GetBytes str |> Array.iter x.WriteByte 
 
-    member x.Align () = memoryTop <- memoryTop + memoryTop % baseSize 
+    member x.Align () = memoryTop <- pad memoryTop 
     member x.getByte offset : BaseType = 
         let memoryBytes = asByteSpan ()
         int memoryBytes.[offset]
@@ -209,7 +210,7 @@ type Forth(memory : BaseType[]) =
     
     //add forth word
 
-    let createHeader (name: string) (flags:Flags) (codeWord: BaseType) (data:BaseType[])=
+    let create (name: string) (flags:Flags) (codeWord: BaseType) (data:BaseType[])=
         let link = vm.LATEST.get()
         let nameSize = byte name.Length
         assert (nameSize <= 31uy)
@@ -225,12 +226,12 @@ type Forth(memory : BaseType[]) =
         vm.HERE.set vm.memory.HERE//refresh pointer
 
     member x.defword (name: string) (flags:Flags) (program:BaseType[]) = 
-        createHeader name flags code.NEST program
+        create name flags code.NEST program
 
     //add native word
     member x.defcode (name: string) (flags:Flags) (f:Fn) = 
         let fAddr = code.addFunction f
-        createHeader name flags fAddr [||]
+        create name flags fAddr [||]
 
     //add variable
     member x.defvar (name: string) (flags:Flags) (varAddress:BaseType) (initial:BaseType option) = 
@@ -574,4 +575,56 @@ type Forth(memory : BaseType[]) =
             vm.SP.push numberOfUnparsedChars // 0 if no error
             code.NEXT 
         )
-        
+
+        let rec eqStrings vm address address2 length = true
+            
+
+        let find address length = 
+            let mutable wordAddr = vm.LATEST.get()
+            let mutable cnt = true
+            while cnt do
+                if wordAddr = 0 
+                then cnt <- false
+                else let flagsLen = vm.memory.getByte (wordAddr + baseSize)
+                     let flagsLen = (int Flags.HIDDEN ||| LENMASK) &&& flagsLen
+                     if flagsLen = length && eqStrings vm address (wordAddr + baseSize + 1) length
+                     then cnt <- false
+                     else wordAddr <- vm.memory.get wordAddr
+            wordAddr
+                     
+
+        x.defcode "FIND" Flags.NONE (fun vm -> 
+            let length = vm.SP.pop()
+            let address = vm.SP.pop()
+            let addrOfDictEntry = find address length 
+            vm.SP.push addrOfDictEntry
+            code.NEXT 
+        )
+        let _TCFA (vm:ForthVM) linkAddress = 
+            let flagsLenAddress = linkAddress + baseSize
+            let length = vm.memory.getByte flagsLenAddress &&& LENMASK
+            let cfaAddress = flagsLenAddress + 1 + length |> pad
+            cfaAddress
+
+        x.defcode ">CFA" Flags.NONE (fun vm -> 
+            let worAddress = vm.SP.pop()
+            let cfaAddress = _TCFA vm worAddress
+            vm.SP.push cfaAddress
+            code.NEXT 
+        )
+        x.defcode ">DFA" Flags.NONE (fun vm -> 
+            let worAddress = vm.SP.pop()
+            let cfaAddress = _TCFA vm worAddress
+            vm.SP.push (cfaAddress + baseSize)
+            code.NEXT 
+        )
+        //_TCFA:
+        //	xor %eax,%eax
+        //	add $4,%edi		// Skip link pointer.
+        //	movb (%edi),%al		// Load flags+len into %al.
+        //	inc %edi		// Skip flags+len byte.
+        //	andb $F_LENMASK,%al	// Just the length, not the flags.
+        //	add %eax,%edi		// Skip the name.
+        //	addl $3,%edi		// The codeword is 4-byte aligned.
+        //	andl $~3,%edi
+        //	ret
