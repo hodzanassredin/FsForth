@@ -19,7 +19,7 @@ type Memory(memory : BaseType[]) =
     let mutable memoryTop = 0
     let asByteSpan () = MemoryMarshal.Cast<BaseType,byte>(new Span<BaseType>(memory))
     
-    member x.HERE = memoryTop
+    member x.MemoryTop = memoryTop
 
     member x.get offset = memory.[offset/baseSize]
 
@@ -33,17 +33,7 @@ type Memory(memory : BaseType[]) =
         free
     member x.reserveMemory size = x.reserveMemoryBytes size * baseSize
 
-    member x.WriteByte (v:byte) = 
-        let address = x.reserveMemoryBytes 1
-        x.setByte address <| int v
-
-    member x.Write (v:BaseType) = 
-        let address = x.reserveMemory baseSize
-        x.setByte address <| v
-        
-    member x.WriteString (str:String) = Encoding.ASCII.GetBytes str |> Array.iter x.WriteByte 
-
-    member x.Align () = memoryTop <- pad memoryTop 
+ 
     member x.getByte offset : BaseType = 
         let memoryBytes = asByteSpan ()
         int memoryBytes.[offset]
@@ -198,7 +188,8 @@ type Forth(memory : BaseType[]) =
     let memory = Memory(memory)
     let code = CodeMemory()
     let vm = ForthVM(memory)
-
+    do 
+        vm.HERE.set vm.memory.MemoryTop
     //member x.Run (fn:Fn) =  
     //    let nextFn = fn vm
     //    x.Run <| code.get nextFn
@@ -210,38 +201,56 @@ type Forth(memory : BaseType[]) =
     
     //add forth word
 
-    let create (name: string) (flags:Flags) (codeWord: BaseType) (data:BaseType[])=
-        let link = vm.LATEST.get()
+    let writeByte (v:byte) = 
+        let address = vm.HERE.get()
+        vm.memory.setByte address <| int v
+        vm.HERE.set <| address + 1
+
+    let write (v:BaseType) = 
+        let address = vm.HERE.get()
+        vm.memory.set address v
+        vm.HERE.set <| address + baseSize
+        
+    let writeString (str:String) = Encoding.ASCII.GetBytes str |> Array.iter writeByte 
+
+    let align () = vm.HERE.get() |> pad |> vm.HERE.set
+
+    member x.create (name: string) (flags:Flags)=
         let nameSize = byte name.Length
         assert (nameSize <= 31uy)
         let flags = byte flags
-        vm.LATEST.set vm.memory.HERE//set link
-        memory.Write(link)
-        nameSize + flags |> int |> memory.Write
-        memory.WriteString name
-        memory.Align()
-        memory.Write codeWord //codeword
-        for d in data do
-            memory.Write d 
-        vm.HERE.set vm.memory.HERE//refresh pointer
+
+        let curlink = vm.LATEST.get()
+        vm.LATEST.set <| vm.HERE.get()//set link
+        write(curlink)
+        nameSize + flags |> int |> write
+        writeString name
+        align()
 
     member x.defword (name: string) (flags:Flags) (program:BaseType[]) = 
-        create name flags code.NEST program
+        x.create name flags 
+        write code.NEST //codeword
+        for d in program do
+            write d 
 
     //add native word
-    member x.defcode (name: string) (flags:Flags) (f:Fn) = 
+    member x.defcodeRetAddr (name: string) (flags:Flags) (f:Fn) = 
         let fAddr = code.addFunction f
-        create name flags fAddr [||]
+        x.create name flags 
+        write fAddr 
+        fAddr
+    member x.defcode (name: string) (flags:Flags) (f:Fn) = x.defcodeRetAddr name flags f |> ignore
 
     //add variable
-    member x.defvar (name: string) (flags:Flags) (varAddress:BaseType) (initial:BaseType option) = 
+    member x.defvarRetAddr (name: string) (flags:Flags) (varAddress:BaseType) (initial:BaseType option) = 
         match initial with  
             | Some(initial) -> vm.memory.set varAddress initial
             | _ -> ()
-        x.defcode name flags (fun vm -> 
+        x.defcodeRetAddr name flags (fun vm -> 
             vm.SP.push varAddress
             code.NEXT
         )
+    member x.defvar (name: string) (flags:Flags) (varAddress:BaseType) (initial:BaseType option) = x.defvarRetAddr name flags varAddress initial |> ignore
     member x.defconst (name: string) (flags:Flags) (value:BaseType) = 
         x.defcode name flags (fun vm -> 
             vm.SP.push value
@@ -249,7 +258,8 @@ type Forth(memory : BaseType[]) =
         )
 
     member x.init () = 
-
+        let EXIT = code.UNNEST
+        let DOCOL = code.NEST
         x.defcode "DROP" Flags.NONE (fun vm -> 
             vm.SP.pop() |> ignore
             code.NEXT
@@ -379,7 +389,7 @@ type Forth(memory : BaseType[]) =
         def apply2 "XOR" (^^^) 
         def apply "INVERT" (~~~) 
     
-        x.defcode "LIT" Flags.NONE (fun vm ->
+        let LIT = x.defcodeRetAddr "LIT" Flags.NONE (fun vm ->
             vm.W <- vm.IP
             inc &vm.IP baseSize
             vm.memory.get(vm.W) |> vm.SP.push
@@ -391,7 +401,7 @@ type Forth(memory : BaseType[]) =
             vm.memory.set address data
             code.NEXT 
         )
-        x.defcode "@" Flags.NONE (fun vm -> 
+        let FETCH = x.defcodeRetAddr "@" Flags.NONE (fun vm -> 
             let address = vm.SP.pop()
             let data = vm.memory.get address 
             vm.SP.push data
@@ -449,7 +459,7 @@ type Forth(memory : BaseType[]) =
 
         x.defvar "STATE" Flags.NONE vm.STATE.address Option.None
         x.defvar "HERE" Flags.NONE vm.HERE.address Option.None
-        x.defvar "LATEST" Flags.NONE vm.LATEST.address Option.None //name_SYSCALL0 // SYSCALL0 must be last in built-in dictionary
+        let LATEST = x.defvarRetAddr "LATEST" Flags.NONE vm.LATEST.address Option.None //name_SYSCALL0 // SYSCALL0 must be last in built-in dictionary
         x.defvar "S0" Flags.NONE vm.S0.address Option.None
         x.defvar "BASE" Flags.NONE vm.BASE.address Option.None
         
@@ -537,7 +547,7 @@ type Forth(memory : BaseType[]) =
                 | (_, _) -> vm.WordBuffer.write c
                             readWord ReadMode.WORD
 
-        x.defcode "WORD" Flags.NONE (fun vm -> 
+        let WORD = x.defcodeRetAddr "WORD" Flags.NONE (fun vm -> 
             let addr, len = readWord ReadMode.SKIP
             vm.SP.push addr
             vm.SP.push len
@@ -576,8 +586,12 @@ type Forth(memory : BaseType[]) =
             code.NEXT 
         )
 
-        let rec eqStrings vm address address2 length = true
-            
+        let rec eqStrings (vm:ForthVM) address address2 length = 
+            if length = 0 
+            then true
+            else if vm.memory.getByte address = vm.memory.getByte address2
+                 then eqStrings vm (address+1) (address2+1) (length - 1)
+                 else false
 
         let find address length = 
             let mutable wordAddr = vm.LATEST.get()
@@ -593,7 +607,7 @@ type Forth(memory : BaseType[]) =
             wordAddr
                      
 
-        x.defcode "FIND" Flags.NONE (fun vm -> 
+        let FIND = x.defcodeRetAddr "FIND" Flags.NONE (fun vm -> 
             let length = vm.SP.pop()
             let address = vm.SP.pop()
             let addrOfDictEntry = find address length 
@@ -618,13 +632,65 @@ type Forth(memory : BaseType[]) =
             vm.SP.push (cfaAddress + baseSize)
             code.NEXT 
         )
-        //_TCFA:
-        //	xor %eax,%eax
-        //	add $4,%edi		// Skip link pointer.
-        //	movb (%edi),%al		// Load flags+len into %al.
-        //	inc %edi		// Skip flags+len byte.
-        //	andb $F_LENMASK,%al	// Just the length, not the flags.
-        //	add %eax,%edi		// Skip the name.
-        //	addl $3,%edi		// The codeword is 4-byte aligned.
-        //	andl $~3,%edi
-        //	ret
+        let readString (vm:ForthVM) address length = 
+            let arr = Array.create length ' '
+            for i in 0..(length - 1) do
+                arr.[i] <- char (vm.memory.getByte (address + i))
+            new String(arr)
+
+        let CREATE = x.defcodeRetAddr "CREATE" Flags.NONE (fun vm -> 
+            let length = vm.SP.pop()
+            let address = vm.SP.pop()
+            let name = readString vm address length
+            x.create name Flags.NONE
+            code.NEXT 
+        )
+
+        let COMMA = x.defcodeRetAddr "," Flags.NONE (fun vm -> 
+            let v = vm.SP.pop()
+            let address = vm.HERE.get()
+            vm.memory.set address v
+            vm.HERE.set (address + baseSize)
+            code.NEXT 
+        )
+
+        let LBRAC = x.defcodeRetAddr "[" Flags.IMMEDIATE (fun vm -> 
+            vm.STATE.set 0
+            code.NEXT 
+        )
+        let RBRAC = x.defcodeRetAddr "]" Flags.IMMEDIATE (fun vm -> 
+            vm.STATE.set 1
+            code.NEXT 
+        )
+
+        let toggleLastWordFlag (flag:Flags) (vm:ForthVM)  = 
+            let flagsAddress = vm.LATEST.get() + baseSize
+            let flagsLen = vm.memory.get flagsAddress//todo or get byte
+            let flagsLen = flagsLen ^^^ int flag //toggle immediate
+            vm.memory.set flagsAddress flagsLen
+            code.NEXT 
+
+        let IMMEDIATE = x.defcodeRetAddr "IMMEDIATE" Flags.IMMEDIATE (toggleLastWordFlag Flags.IMMEDIATE)
+
+        let HIDDEN = x.defcodeRetAddr "HIDDEN" Flags.IMMEDIATE (toggleLastWordFlag Flags.HIDDEN)
+
+        x.defword ":" Flags.NONE 
+            [|
+                WORD;// Get the name of the new word
+                CREATE;// CREATE the dictionary entry / header
+                LIT; DOCOL; COMMA;// Append DOCOL  (the codeword).
+                LATEST; FETCH; HIDDEN // Make the word hidden (see below for definition).
+                RBRAC;// Go into compile mode.
+                EXIT// Return from the function.
+            |]
+        
+        x.defword ";" Flags.IMMEDIATE 
+            [|
+                LIT; EXIT; COMMA;// Append EXIT (so the word will return).
+                LATEST; FETCH; HIDDEN; // Toggle hidden flag -- unhide the word (see below for definition).
+                LBRAC;// Go back to IMMEDIATE mode.
+                EXIT;// Return from the function.
+            |]
+
+        x.defword "HIDE" Flags.NONE [|WORD;FIND;HIDDEN;EXIT|]
+        ()
