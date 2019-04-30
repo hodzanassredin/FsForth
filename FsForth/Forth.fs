@@ -785,4 +785,15 @@ type Forth(memory : BaseType[]) =
             INTERPRET;// interpret the next word
             BRANCH;-(baseSize * 2)// and loop (indefinitely)
         |]
+
+        x.defcode "CHAR" Flags.NONE (fun vm ->
+            let str = _WORD ()
+            let c = vm.memory.get str.address
+            vm.SP.push c
+            code.NEXT
+        )
+        x.defcode "EXECUTE" Flags.NONE (fun vm ->
+            vm.SP.pop()// Get xt into %eax and jump to it. After xt runs its NEXT will continue executing the current word.
+        )
+
         ()
