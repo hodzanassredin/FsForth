@@ -15,7 +15,7 @@ let pad address = (address + (baseSize-1)) &&& ~~~(baseSize-1)//same as address 
 
 let inc (v:BaseType byref) count = v <- v + count
 let dec (v:BaseType byref) count = v <- v - count
-
+type ByteString = { address: BaseType; length: BaseType }
 type Memory(memory : BaseType[]) =
     let mutable memoryTop = 0
     let asByteSpan () = MemoryMarshal.Cast<BaseType,byte>(new Span<BaseType>(memory))
@@ -29,15 +29,15 @@ type Memory(memory : BaseType[]) =
 
     member x.copyFromBytes offset (arr:byte array) = arr.CopyTo(asByteSpan().Slice(offset, arr.Length) )
     member x.getBytes offset length = asByteSpan().Slice(offset, length)
-    member x.writeStdout offset length = 
+    member x.writeStdout str = 
         use out = System.Console.OpenStandardOutput()
-        let span = asByteReadOnlySpan().Slice(offset, length)
+        let span = asByteReadOnlySpan().Slice(str.address, str.length)
         out.Write span
         out.Flush()
 
-    member x.readStdin offset length = 
+    member x.readStdin str = 
         use inp = System.Console.OpenStandardInput()
-        let span = asByteSpan().Slice(offset, length)
+        let span = asByteSpan().Slice(str.address, str.length)
         inp.Read span
         
     member x.reserveMemoryBytes size = 
@@ -63,11 +63,16 @@ type Variable(memory:Memory, initial: BaseType)=
     member x.get () = memory.get addr
     member x.set v = memory.set addr v
 
+
+let reserveString (memory:Memory) (str:byte[]) = 
+    let buffer = memory.reserveMemoryBytes str.Length
+    memory.copyFromBytes buffer str
+    { address= buffer; length= str.Length }
+
 type StringBuffer(memory : Memory, BUFFER_SIZE:int)=
     let buffer = memory.reserveMemoryBytes BUFFER_SIZE
     let mutable bufftop = buffer //buffer pointer
-    member x.address = buffer
-    member x.length = bufftop - buffer 
+    member x.str = {address= buffer; length = bufftop - buffer}
     member x.reset () = bufftop <- buffer
     member x.write c = memory.setByte bufftop c
                        inc &bufftop 1
@@ -76,14 +81,19 @@ type InputBuffer(memory : Memory, BUFFER_SIZE:int)=
     let buffer = memory.reserveMemoryBytes BUFFER_SIZE
     let mutable bufftop = buffer //buffer pointer
     let mutable currkey  = buffer //next character to read
+    
+    member x.GetLast n = 
+        let count = currkey - buffer
+        let count = if n > count then count else n
+        { address= currkey - count; length = count}
 
     member x.get () = 
         if currkey < bufftop 
         then let v = memory.getByte currkey
              currkey <- currkey + 1
              v
-        else let count = memory.readStdin buffer BUFFER_SIZE
-             if count<= 0 then failwith "exit"
+        else let count = memory.readStdin {address= buffer ; length = BUFFER_SIZE}
+             if count<= 0 then failwith "exit"//todo
              else bufftop <- buffer + count
                   currkey <- buffer
                   x.get ()
@@ -93,12 +103,12 @@ type OutputBuffer(memory : Memory, BUFFER_SIZE:int)=
     let mutable currkey = buffer //next character to write
 
     member x.flush() =
-        memory.writeStdout buffer (currkey-buffer)
+        memory.writeStdout {address = buffer; length= (currkey-buffer)}
         currkey<-0
 
     member x.set c = 
         if currkey >= buffer + BUFFER_SIZE then x.flush()
-        let v = memory.setByte currkey
+        memory.setByte currkey c
         currkey <- currkey + 1
 
 type Stack(memory : Memory, size:int)=
@@ -106,6 +116,8 @@ type Stack(memory : Memory, size:int)=
     let low = memory.reserveMemory size//growind backward
     let high = low + sizeInBytes
     let mutable sp = high //stack pointer
+
+    member x.reset () = sp <- high
     member x.top 
         with get () = sp
         and set (value) = sp <- value
@@ -140,7 +152,8 @@ type ForthVM(memory : Memory) =
     member val Input = InputBuffer(memory, 4096)//stdin
     member val Output = OutputBuffer(memory, 4096)//stdout
     member val WordBuffer = StringBuffer(memory, 32)//words storage
-    
+    member val  errmsg = reserveString memory <| Encoding.ASCII.GetBytes "PARSE ERROR: "
+    member val  errmsgnl = reserveString memory <| Encoding.ASCII.GetBytes "\n"
     [<DefaultValue>] val mutable IP : BaseType//istruction pointer in bytes
     [<DefaultValue>] val mutable W : BaseType//work
     member x.memory = memory
@@ -257,11 +270,14 @@ type Forth(memory : BaseType[]) =
             code.NEXT
         )
     member x.defvar (name: string) (flags:Flags) (varAddress:BaseType) (initial:BaseType option) = x.defvarRetAddr name flags varAddress initial |> ignore
-    member x.defconst (name: string) (flags:Flags) (value:BaseType) = 
-        x.defcode name flags (fun vm -> 
+    member x.defconstRetAddr (name: string) (flags:Flags) (value:BaseType) = 
+        x.defcodeRetAddr name flags (fun vm -> 
             vm.SP.push value
             code.NEXT
         )
+
+    member x.defconst (name: string) (flags:Flags) (value:BaseType) = 
+        x.defconstRetAddr name flags value |> ignore
 
     member x.init () = 
         let EXIT = code.UNNEST
@@ -470,7 +486,7 @@ type Forth(memory : BaseType[]) =
         x.defvar "BASE" Flags.NONE vm.BASE.address Option.None
         
         x.defconst "VERSION" Flags.NONE 1
-        x.defconst "R0" Flags.NONE vm.R0.address
+        let RZ = x.defconstRetAddr "R0" Flags.NONE vm.R0.address
         x.defconst "DOCOL" Flags.NONE code.NEST
         x.defconst "F_IMMED" Flags.NONE <| int Flags.IMMEDIATE
         x.defconst "F_HIDDEN" Flags.NONE <| int Flags.HIDDEN
@@ -548,24 +564,26 @@ type Forth(memory : BaseType[]) =
                 | ('\n', ReadMode.COMMENT) -> readWord ReadMode.SKIP
                 | (_, ReadMode.COMMENT) -> readWord ReadMode.COMMENT
                 | (c, ReadMode.SKIP) when c = ' ' || c = '\t' -> readWord ReadMode.SKIP
-                | (c, ReadMode.WORD) when c = ' ' || c = '\t' -> (vm.WordBuffer.address, vm.WordBuffer.length)
+                | (c, ReadMode.WORD) when c = ' ' || c = '\t' -> vm.WordBuffer.str
                 | ('/', ReadMode.SKIP) -> readWord ReadMode.COMMENT
                 | (_, _) -> vm.WordBuffer.write c
                             readWord ReadMode.WORD
 
+        let _WORD () = readWord ReadMode.SKIP
+
         let WORD = x.defcodeRetAddr "WORD" Flags.NONE (fun vm -> 
-            let addr, len = readWord ReadMode.SKIP
-            vm.SP.push addr
-            vm.SP.push len
+            let str = _WORD()
+            vm.SP.push str.address
+            vm.SP.push str.length
             code.NEXT 
         )
 
-        let parseNumber address length = 
+        let _NUMBER str = 
             let radix = vm.BASE.get()
             let mutable n = 0
             let mutable idx = 0
 
-            let next() = let c = vm.memory.getByte address 
+            let next() = let c = vm.memory.getByte str.address 
                          idx <- idx + 1
                          c
 
@@ -578,15 +596,15 @@ type Forth(memory : BaseType[]) =
                 let d = next() - int '0'
                 if d > radix then cnt <- false
                 else n <- n + d * radix
-                cnt <- idx < length
+                cnt <- idx < str.length
             
-            let count = if length = 0 then 0 else length - idx
+            let count = if str.length = 0 then 0 else str.length - idx
 
             if isNegative then -n, count else n, count
 
         x.defcode "NUMBER" Flags.NONE (fun vm -> 
             let len, addr = vm.SP.pop(), vm.SP.pop()
-            let number, numberOfUnparsedChars = parseNumber addr len
+            let number, numberOfUnparsedChars = _NUMBER {address = addr ; length = len}
             vm.SP.push number
             vm.SP.push numberOfUnparsedChars // 0 if no error
             code.NEXT 
@@ -599,7 +617,7 @@ type Forth(memory : BaseType[]) =
                  then eqStrings vm (address+1) (address2+1) (length - 1)
                  else false
 
-        let find address length = 
+        let _FIND str = 
             let mutable wordAddr = vm.LATEST.get()
             let mutable cnt = true
             while cnt do
@@ -607,7 +625,7 @@ type Forth(memory : BaseType[]) =
                 then cnt <- false
                 else let flagsLen = vm.memory.getByte (wordAddr + baseSize)
                      let flagsLen = (int Flags.HIDDEN ||| LENMASK) &&& flagsLen
-                     if flagsLen = length && eqStrings vm address (wordAddr + baseSize + 1) length
+                     if flagsLen = str.length && eqStrings vm str.address (wordAddr + baseSize + 1) str.length
                      then cnt <- false
                      else wordAddr <- vm.memory.get wordAddr
             wordAddr
@@ -616,7 +634,7 @@ type Forth(memory : BaseType[]) =
         let FIND = x.defcodeRetAddr "FIND" Flags.NONE (fun vm -> 
             let length = vm.SP.pop()
             let address = vm.SP.pop()
-            let addrOfDictEntry = find address length 
+            let addrOfDictEntry = _FIND {address = address; length = length }
             vm.SP.push addrOfDictEntry
             code.NEXT 
         )
@@ -651,12 +669,14 @@ type Forth(memory : BaseType[]) =
             x.create name Flags.NONE
             code.NEXT 
         )
-
-        let COMMA = x.defcodeRetAddr "," Flags.NONE (fun vm -> 
-            let v = vm.SP.pop()
+        let _COMMA (vm:ForthVM) v =
             let address = vm.HERE.get()
             vm.memory.set address v
             vm.HERE.set (address + baseSize)
+
+        let COMMA = x.defcodeRetAddr "," Flags.NONE (fun vm -> 
+            let v = vm.SP.pop()
+            _COMMA vm v
             code.NEXT 
         )
 
@@ -728,104 +748,38 @@ type Forth(memory : BaseType[]) =
         x.defcode "TELL" Flags.NONE (fun vm ->
             let length = vm.SP.pop()
             let address = vm.SP.pop()
-            vm.memory.writeStdout address length
+            vm.memory.writeStdout {address = address; length = length}
             code.NEXT 
         )
 
+
         let INTERPRET = x.defcodeRetAddr "INTERPRET" Flags.NONE (fun vm ->
-            call _WORD        // Returns %ecx = length, %edi = pointer to word.
-        
-            // Is it in the dictionary?
-            xor %eax,%eax
-            movl %eax,interpret_is_lit // Not a literal number (not yet anyway ...)
-            call _FIND        // Returns %eax = pointer to header or 0 if not found.
-            test %eax,%eax        // Found?
-            jz 1f
-        
-            // In the dictionary.  Is it an IMMEDIATE codeword?
-            mov %eax,%edi        // %edi = dictionary entry
-            movb 4(%edi),%al    // Get name+flags.
-            push %ax        // Just save it for now.
-            call _TCFA        // Convert dictionary entry (in %edi) to codeword pointer.
-            pop %ax
-            andb $F_IMMED,%al    // Is IMMED flag set?
-            mov %edi,%eax
-            jnz 4f            // If IMMED, jump straight to executing.
-        
-            jmp 2f
-        
-        1:    // Not in the dictionary (not a word) so assume it's a literal number.
-            incl interpret_is_lit
-            call _NUMBER        // Returns the parsed number in %eax, %ecx > 0 if error
-            test %ecx,%ecx
-            jnz 6f
-            mov %eax,%ebx
-            mov $LIT,%eax        // The word is LIT
-        
-        2:    // Are we compiling or executing?
-            movl var_STATE,%edx
-            test %edx,%edx
-            jz 4f            // Jump if executing.
-        
-            // Compiling - just append the word to the current dictionary definition.
-            call _COMMA
-            mov interpret_is_lit,%ecx // Was it a literal?
-            test %ecx,%ecx
-            jz 3f
-            mov %ebx,%eax        // Yes, so LIT is followed by a number.
-            call _COMMA
-        3:    NEXT
-        
-        4:    // Executing - run it!
-            mov interpret_is_lit,%ecx // Literal?
-            test %ecx,%ecx        // Literal?
-            jnz 5f
-        
-            // Not a literal, execute it now.  This never returns, but the codeword will
-            // eventually call NEXT which will reenter the loop in QUIT.
-            jmp *(%eax)
-        
-        5:    // Executing a literal, which means push it on the stack.
-            push %ebx
-            NEXT
-        
-        6:    // Parse error (not a known word or a number in the current BASE).
-            // Print an error message followed by up to 40 characters of context.
-            mov $2,%ebx        // 1st param: stderr
-            mov $errmsg,%ecx    // 2nd param: error message
-            mov $errmsgend-errmsg,%edx // 3rd param: length of string
-            mov $__NR_write,%eax    // write syscall
-            int $0x80
-        
-            mov (currkey),%ecx    // the error occurred just before currkey position
-            mov %ecx,%edx
-            sub $buffer,%edx    // %edx = currkey - buffer (length in buffer before currkey)
-            cmp $40,%edx        // if > 40, then print only 40 characters
-            jle 7f
-            mov $40,%edx
-        7:    sub %edx,%ecx        // %ecx = start of area to print, %edx = length
-            mov $__NR_write,%eax    // write syscall
-            int $0x80
-        
-            mov $errmsgnl,%ecx    // newline
-            mov $1,%edx
-            mov $__NR_write,%eax    // write syscall
-            int $0x80
-        
-            NEXT
+            let word = _WORD() // Returns %ecx = length, %edi = pointer to word.
+            let pointer = _FIND word//pointer to header or 0 if not found.
+            if pointer <> 0 //found word
+            then
+                let nameFlags = vm.memory.get pointer
+                let codeword = _TCFA vm pointer
+                let isImmediate = (nameFlags &&& int Flags.IMMEDIATE) <> 0
+                if isImmediate
+                then codeword// If IMMED, jump straight to executing.
+                else if vm.STATE.get() = 0// Are we compiling or executing?
+                     then codeword// Jump if executing.
+                     else // Compiling - just append the word to the current dictionary definition.
+                          _COMMA vm codeword
+                          code.NEXT
+            else // Not in the dictionary (not a word) so assume it's a literal number.
+                 let number, numberOfUnparsedChars = _NUMBER word
+                 if numberOfUnparsedChars > 0
+                 then vm.memory.writeStdout vm.errmsg
+                      vm.memory.writeStdout <| vm.Input.GetLast 40
+                      vm.memory.writeStdout vm.errmsgnl
+                      code.NEXT
+                 else vm.SP.push number
+                      _COMMA vm LIT
+                      code.NEXT
         )
         
-        //    .section .rodata
-        //errmsg: .ascii "PARSE ERROR: "
-        //errmsgend:
-        //errmsgnl: .ascii "\n"
-        
-        //    .data            // NB: easier to fit in the .data section
-        //    .align 4
-        //interpret_is_lit:
-        //    .int 0            // Flag used to record if reading a literal
-        
-
         x.defword "QUIT" Flags.NONE [|
             RZ;RSPSTORE;// R0 RSP!, clear the return stack
             INTERPRET;// interpret the next word
