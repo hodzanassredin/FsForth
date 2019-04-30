@@ -6,6 +6,7 @@ open System.Runtime.InteropServices
 open System.Collections.Generic
 open System.Runtime.CompilerServices
 open System.Text
+open System.IO
 
 type BaseType = Int32
 type FnPointer = BaseType
@@ -18,6 +19,7 @@ let dec (v:BaseType byref) count = v <- v - count
 type Memory(memory : BaseType[]) =
     let mutable memoryTop = 0
     let asByteSpan () = MemoryMarshal.Cast<BaseType,byte>(new Span<BaseType>(memory))
+    let asByteReadOnlySpan () = MemoryMarshal.Cast<BaseType,byte>(new ReadOnlySpan<BaseType>(memory))
     
     member x.MemoryTop = memoryTop
 
@@ -26,7 +28,18 @@ type Memory(memory : BaseType[]) =
     member x.set offset v = memory.[offset/baseSize] <- v 
 
     member x.copyFromBytes offset (arr:byte array) = arr.CopyTo(asByteSpan().Slice(offset, arr.Length) )
-    member x.getBytes offset length = asByteSpan().Slice(offset, length).ToArray()
+    member x.getBytes offset length = asByteSpan().Slice(offset, length)
+    member x.writeStdout offset length = 
+        use out = System.Console.OpenStandardOutput()
+        let span = asByteReadOnlySpan().Slice(offset, length)
+        out.Write span
+        out.Flush()
+
+    member x.readStdin offset length = 
+        use inp = System.Console.OpenStandardInput()
+        let span = asByteSpan().Slice(offset, length)
+        inp.Read span
+        
     member x.reserveMemoryBytes size = 
         let free = memoryTop
         memoryTop <- memoryTop + size
@@ -69,13 +82,10 @@ type InputBuffer(memory : Memory, BUFFER_SIZE:int)=
         then let v = memory.getByte currkey
              currkey <- currkey + 1
              v
-        else let chars = Array.create BUFFER_SIZE ' '
-             let count = Console.In.ReadBlock(chars, 0, BUFFER_SIZE)
+        else let count = memory.readStdin buffer BUFFER_SIZE
              if count<= 0 then failwith "exit"
              else bufftop <- buffer + count
-                  currkey <- 0
-                  let ascii = Encoding.ASCII.GetBytes(chars, 0, count)
-                  memory.copyFromBytes buffer ascii
+                  currkey <- buffer
                   x.get ()
 
 type OutputBuffer(memory : Memory, BUFFER_SIZE:int)=
@@ -83,10 +93,7 @@ type OutputBuffer(memory : Memory, BUFFER_SIZE:int)=
     let mutable currkey = buffer //next character to write
 
     member x.flush() =
-        let span = memory.getBytes buffer (currkey-buffer)
-        let string = Encoding.ASCII.GetString(span);
-        Console.Out.Write(string)
-        Console.Out.Flush()
+        memory.writeStdout buffer (currkey-buffer)
         currkey<-0
 
     member x.set c = 
@@ -133,7 +140,6 @@ type ForthVM(memory : Memory) =
     member val Input = InputBuffer(memory, 4096)//stdin
     member val Output = OutputBuffer(memory, 4096)//stdout
     member val WordBuffer = StringBuffer(memory, 32)//words storage
-    
     
     [<DefaultValue>] val mutable IP : BaseType//istruction pointer in bytes
     [<DefaultValue>] val mutable W : BaseType//work
@@ -502,7 +508,7 @@ type Forth(memory : BaseType[]) =
             code.NEXT 
         )
         //set return stack pointer
-        x.defcode "RSP!" Flags.NONE (fun vm -> 
+        let RSPSTORE = x.defcodeRetAddr "RSP!" Flags.NONE (fun vm -> 
             vm.RSP.top <- vm.SP.pop()
             code.NEXT 
         )
@@ -693,4 +699,136 @@ type Forth(memory : BaseType[]) =
             |]
 
         x.defword "HIDE" Flags.NONE [|WORD;FIND;HIDDEN;EXIT|]
+
+        let TICK = x.defcodeRetAddr "'" Flags.NONE (fun vm ->
+            vm.SP.push <| vm.memory.get vm.IP//todo check
+            inc &vm.IP baseSize
+            code.NEXT 
+        )
+
+        let BRANCH = x.defcodeRetAddr "BRANCH" Flags.NONE (fun vm ->
+            vm.IP <- vm.IP + vm.memory.get vm.IP // add the offset to the instruction pointer
+            code.NEXT 
+        )
+        x.defcode "0BRANCH" Flags.NONE (fun vm ->
+            if vm.SP.pop () = 0 // top of stack is zero?
+            then vm.IP <- vm.IP + vm.memory.get vm.IP // add the offset to the instruction pointer
+            else inc &vm.IP baseSize// otherwise we need to skip the offset
+            code.NEXT 
+        )
+
+        x.defcode "LITSTRING" Flags.NONE (fun vm ->
+            let length = vm.memory.get vm.IP
+            inc &vm.IP baseSize
+            vm.SP.push vm.IP     // push the address of the start of the string
+            vm.SP.push length    // push length on the stack
+            vm.IP <- vm.IP + length |> pad  // skip past the string and round up to next BaseSize byte boundary
+            code.NEXT 
+        )
+        x.defcode "TELL" Flags.NONE (fun vm ->
+            let length = vm.SP.pop()
+            let address = vm.SP.pop()
+            vm.memory.writeStdout address length
+            code.NEXT 
+        )
+
+        let INTERPRET = x.defcodeRetAddr "INTERPRET" Flags.NONE (fun vm ->
+            call _WORD        // Returns %ecx = length, %edi = pointer to word.
+        
+            // Is it in the dictionary?
+            xor %eax,%eax
+            movl %eax,interpret_is_lit // Not a literal number (not yet anyway ...)
+            call _FIND        // Returns %eax = pointer to header or 0 if not found.
+            test %eax,%eax        // Found?
+            jz 1f
+        
+            // In the dictionary.  Is it an IMMEDIATE codeword?
+            mov %eax,%edi        // %edi = dictionary entry
+            movb 4(%edi),%al    // Get name+flags.
+            push %ax        // Just save it for now.
+            call _TCFA        // Convert dictionary entry (in %edi) to codeword pointer.
+            pop %ax
+            andb $F_IMMED,%al    // Is IMMED flag set?
+            mov %edi,%eax
+            jnz 4f            // If IMMED, jump straight to executing.
+        
+            jmp 2f
+        
+        1:    // Not in the dictionary (not a word) so assume it's a literal number.
+            incl interpret_is_lit
+            call _NUMBER        // Returns the parsed number in %eax, %ecx > 0 if error
+            test %ecx,%ecx
+            jnz 6f
+            mov %eax,%ebx
+            mov $LIT,%eax        // The word is LIT
+        
+        2:    // Are we compiling or executing?
+            movl var_STATE,%edx
+            test %edx,%edx
+            jz 4f            // Jump if executing.
+        
+            // Compiling - just append the word to the current dictionary definition.
+            call _COMMA
+            mov interpret_is_lit,%ecx // Was it a literal?
+            test %ecx,%ecx
+            jz 3f
+            mov %ebx,%eax        // Yes, so LIT is followed by a number.
+            call _COMMA
+        3:    NEXT
+        
+        4:    // Executing - run it!
+            mov interpret_is_lit,%ecx // Literal?
+            test %ecx,%ecx        // Literal?
+            jnz 5f
+        
+            // Not a literal, execute it now.  This never returns, but the codeword will
+            // eventually call NEXT which will reenter the loop in QUIT.
+            jmp *(%eax)
+        
+        5:    // Executing a literal, which means push it on the stack.
+            push %ebx
+            NEXT
+        
+        6:    // Parse error (not a known word or a number in the current BASE).
+            // Print an error message followed by up to 40 characters of context.
+            mov $2,%ebx        // 1st param: stderr
+            mov $errmsg,%ecx    // 2nd param: error message
+            mov $errmsgend-errmsg,%edx // 3rd param: length of string
+            mov $__NR_write,%eax    // write syscall
+            int $0x80
+        
+            mov (currkey),%ecx    // the error occurred just before currkey position
+            mov %ecx,%edx
+            sub $buffer,%edx    // %edx = currkey - buffer (length in buffer before currkey)
+            cmp $40,%edx        // if > 40, then print only 40 characters
+            jle 7f
+            mov $40,%edx
+        7:    sub %edx,%ecx        // %ecx = start of area to print, %edx = length
+            mov $__NR_write,%eax    // write syscall
+            int $0x80
+        
+            mov $errmsgnl,%ecx    // newline
+            mov $1,%edx
+            mov $__NR_write,%eax    // write syscall
+            int $0x80
+        
+            NEXT
+        )
+        
+        //    .section .rodata
+        //errmsg: .ascii "PARSE ERROR: "
+        //errmsgend:
+        //errmsgnl: .ascii "\n"
+        
+        //    .data            // NB: easier to fit in the .data section
+        //    .align 4
+        //interpret_is_lit:
+        //    .int 0            // Flag used to record if reading a literal
+        
+
+        x.defword "QUIT" Flags.NONE [|
+            RZ;RSPSTORE;// R0 RSP!, clear the return stack
+            INTERPRET;// interpret the next word
+            BRANCH;-(baseSize * 2)// and loop (indefinitely)
+        |]
         ()
