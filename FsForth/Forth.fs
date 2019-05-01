@@ -44,8 +44,6 @@ type Memory(memory : BaseType[]) =
         let free = memoryTop
         memoryTop <- memoryTop + size
         free
-    member x.reserveMemory size = x.reserveMemoryBytes size * baseSize
-
  
     member x.getByte offset : BaseType = 
         let memoryBytes = asByteSpan ()
@@ -56,7 +54,7 @@ type Memory(memory : BaseType[]) =
 
 
 type Variable(memory:Memory, initial: BaseType)=
-    let addr = memory.reserveMemory 1
+    let addr = memory.reserveMemoryBytes baseSize
     do
         memory.set addr initial
     member x.address = addr
@@ -112,9 +110,8 @@ type OutputBuffer(memory : Memory, BUFFER_SIZE:int)=
         currkey <- currkey + 1
 
 type Stack(memory : Memory, size:int)=
-    let sizeInBytes = size * baseSize
-    let low = memory.reserveMemory size//growind backward
-    let high = low + sizeInBytes
+    let low = memory.reserveMemoryBytes size//growing backward
+    let high = low + size
     let mutable sp = high //stack pointer
 
     member x.reset () = sp <- high
@@ -141,14 +138,15 @@ type Stack(memory : Memory, size:int)=
 
 type ForthVM(memory : Memory) =
     //memory for main forth variables
+    member val QUIT = Variable(memory, 0)
     member val STATE = Variable(memory, 0)//Is the interpreter executing code (0) or compiling a word (non-zero)?
     member val LATEST = Variable(memory, 0)//Points to the latest (most recently defined) word in the dictionary.
     member val HERE = Variable(memory, 0)//Points to the next free byte of memory.  When compiling, compiled words go here.
     member val S0 = Variable(memory, 0)//Stores the address of the top of the parameter stack.
     member val R0 = Variable(memory, 0)//Stores the address of the top of the parameter stack.
     member val BASE = Variable(memory, 10)//The current base for printing and reading numbers.
-    member val SP = Stack(memory, 256)//data stack
-    member val RSP = Stack(memory, 256)//return stack
+    member val SP = Stack(memory, 8192)//data stack
+    member val RSP = Stack(memory, 8192)//return stack
     member val Input = InputBuffer(memory, 4096)//stdin
     member val Output = OutputBuffer(memory, 4096)//stdout
     member val WordBuffer = StringBuffer(memory, 32)//words storage
@@ -195,6 +193,8 @@ type CodeMemory()=
 
     member x.get idx = nativeFuncs.[idx]
 
+
+
 [<Flags>]
 type Flags =
     | NONE = 0
@@ -207,18 +207,9 @@ type Forth(memory : BaseType[]) =
     let memory = Memory(memory)
     let code = CodeMemory()
     let vm = ForthVM(memory)
+    
     do 
         vm.HERE.set vm.memory.MemoryTop
-    //member x.Run (fn:Fn) =  
-    //    let nextFn = fn vm
-    //    x.Run <| code.get nextFn
-    
-    //member x.AddToDictionary (v:BaseType) = 
-    //    let pointer = vm.HERE.get ()
-    //    memory.set pointer v
-    //    vm.HERE.set (pointer + 1)
-    
-    //add forth word
 
     let writeByte (v:byte) = 
         let address = vm.HERE.get()
@@ -234,6 +225,11 @@ type Forth(memory : BaseType[]) =
 
     let align () = vm.HERE.get() |> pad |> vm.HERE.set
 
+    let rec run (fnIdx:BaseType) =  
+        let f = code.get fnIdx
+        let nextFn = f vm
+        run nextFn
+
     member x.create (name: string) (flags:Flags)=
         let nameSize = byte name.Length
         assert (nameSize <= 31uy)
@@ -246,11 +242,16 @@ type Forth(memory : BaseType[]) =
         writeString name
         align()
 
-    member x.defword (name: string) (flags:Flags) (program:BaseType[]) = 
+    member x.defwordRetCodeword (name: string) (flags:Flags) (program:BaseType[]) = 
         x.create name flags 
+        let codewordAddr = vm.memory.MemoryTop
         write code.NEST //codeword
         for d in program do
             write d 
+        codewordAddr
+
+    member x.defword (name: string) (flags:Flags) (program:BaseType[]) = 
+        x.defwordRetCodeword name flags program |>ignore
 
     //add native word
     member x.defcodeRetAddr (name: string) (flags:Flags) (f:Fn) = 
@@ -279,6 +280,10 @@ type Forth(memory : BaseType[]) =
     member x.defconst (name: string) (flags:Flags) (value:BaseType) = 
         x.defconstRetAddr name flags value |> ignore
 
+    member x.coldStart () = 
+        vm.IP <- vm.QUIT.address
+        run code.NEXT
+        
     member x.init () = 
         let EXIT = code.UNNEST
         let DOCOL = code.NEST
@@ -780,11 +785,12 @@ type Forth(memory : BaseType[]) =
                       code.NEXT
         )
         
-        x.defword "QUIT" Flags.NONE [|
+        let QUIT = x.defwordRetCodeword "QUIT" Flags.NONE [|
             RZ;RSPSTORE;// R0 RSP!, clear the return stack
             INTERPRET;// interpret the next word
             BRANCH;-(baseSize * 2)// and loop (indefinitely)
         |]
+        vm.QUIT.set QUIT//cold start
 
         x.defcode "CHAR" Flags.NONE (fun vm ->
             let str = _WORD ()
@@ -793,7 +799,8 @@ type Forth(memory : BaseType[]) =
             code.NEXT
         )
         x.defcode "EXECUTE" Flags.NONE (fun vm ->
-            vm.SP.pop()// Get xt into %eax and jump to it. After xt runs its NEXT will continue executing the current word.
+            let addr = vm.SP.pop()// Get xt into %eax and jump to it. After xt runs its NEXT will continue executing the current word.
+            addr
         )
 
         ()

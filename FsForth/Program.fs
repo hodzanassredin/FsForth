@@ -5,7 +5,8 @@ open System.Runtime.InteropServices
 
 [<EntryPoint>]
 let main argv =
-    let memory = Forth.Memory(Array.create (1<<<16) 0)
-    let state = Forth.ForthState(memory)
-    state.Run (fun fn -> 0)
+    let memory = Array.create (1<<<16) 0
+    let f = Forth.Forth(memory)
+    f.init()
+    f.coldStart ()
     0 // return an integer exit code
