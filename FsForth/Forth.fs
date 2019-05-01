@@ -60,7 +60,6 @@ module Memory =
 
 
     let validate (cursor:Cursor) = ()
-
         //if cursor.current < cursor.span.address || cursor.current > (top cursor.span)
         //then failwith "broken span bounds"
 
@@ -81,8 +80,6 @@ module Memory =
         memory : byte[]
     }
 
-    
-
     let get (memory:Memory)  (address:int<bytes>) = memory.memory.[int address]
     let set (memory:Memory)  (address:int<bytes>) v = memory.memory.[int address] <- v 
 
@@ -91,15 +88,7 @@ module Memory =
     let setInt (memory:Memory) (address:int<bytes>) (v:int) = BitConverter.GetBytes(v).CopyTo(memory.memory, address |> int);
 
     let copyFromBytes (memory:Memory) (address:int<bytes>) (arr:byte array) = arr.CopyTo(memory.memory, int address)
-    let writeStdout (memory:Memory) cursor = 
-        use out = System.Console.OpenStandardOutput()
-        out.Write(memory.memory, int cursor.span.address, int cursor.current)
-        out.Flush()
-
-    let readStdin (memory:Memory) span = 
-        use inp = System.Console.OpenStandardInput()
-        inp.Read(memory.memory, int span.address, int span.size) * 1<bytes>
-
+    
     let write (memory:Memory) cursor b = 
         set memory cursor.current b
         inc cursor 1<bytes> |> ignore
@@ -108,8 +97,15 @@ module Memory =
         setInt memory cursor.current i
         incInts cursor 1<ints> |> ignore
 
+    type StringBuffer(memory : Memory, cursor : Cursor)=
+        member x.str = cursor.span
+        member x.reset () = reset cursor
+        member x.write c = write memory cursor c
+
     type InputBuffer(memory : Memory, cursor : Cursor)=
-        
+        let readStdin (memory:Memory) span = 
+            use inp = System.Console.OpenStandardInput()
+            inp.Read(memory.memory, int span.address, int span.size) * 1<bytes>
         let mutable bufftop = cursor.span.address 
         do 
             if cursor.isInverse then failwith "not possible to use inverse memory as buffer"
@@ -130,7 +126,12 @@ module Memory =
                       x.get ()
 
     type OutputBuffer(memory : Memory, cursor : Cursor)=
-
+        let writeStdout (memory:Memory) cursor = 
+            use out = System.Console.OpenStandardOutput()
+            out.Write(memory.memory, int cursor.span.address, int cursor.current)
+            out.Flush()
+        do 
+            if cursor.isInverse then failwith "not possible to use inverse memory as buffer"
         member x.flush() =
             writeStdout memory cursor
             reset cursor
@@ -170,7 +171,7 @@ module Memory =
         return_stack : Stack
         input_buffer : InputBuffer
         out_buffer : OutputBuffer
-        word_buffer : Cursor
+        word_buffer : StringBuffer
     }
 
     let create (size:int<bytes>) config  = 
@@ -189,7 +190,7 @@ module Memory =
             return_stack = allocate config.RETURN_STACK_SIZE true Stack
             input_buffer = allocate config.BUFFER_SIZE false InputBuffer
             out_buffer= allocate config.BUFFER_SIZE false OutputBuffer
-            word_buffer = allocate 32<bytes> false snd
+            word_buffer = allocate 32<bytes> false StringBuffer
         }
 
 
