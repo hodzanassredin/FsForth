@@ -75,7 +75,7 @@ module Memory =
 
     let copyFromBytes (memory:Memory) (address:int) (arr:byte array) = arr.CopyTo(memory, int address)
     let copyToBytes (memory:Memory) (address:int) (arr:byte array) = Array.Copy(memory, address, arr, 0, arr.Length)
-    
+
     let write (memory:Memory) cursor b = 
         memory.[cursor.current] <- b
         inc cursor 1 |> ignore
@@ -179,9 +179,9 @@ module ForthVM =
             nextFnPointer - 1
     
         let next (vm:ForthVM) = 
-            vm.W <- vm.IP
+            vm.W <- getInt vm.memory vm.IP//current codeword
             vm.IP <- vm.IP + baseSize
-            getInt vm.memory vm.W
+            getInt vm.memory vm.W//native fn address
         let next = addFn next
         //alternative names: docolon, enter
         let docol (vm:ForthVM) = 
@@ -236,6 +236,7 @@ module ForthVM =
         NEXT : Variable
         DOCOL : Variable
         EXIT : Variable
+        QUIT : Variable//cold start
     }
 
     let create size config  = 
@@ -271,6 +272,7 @@ module ForthVM =
             NEXT = allocate baseSize false Variable
             DOCOL = allocate baseSize false Variable
             EXIT = allocate baseSize false Variable
+            QUIT = allocate baseSize false Variable
         }
 
 module Words = 
@@ -308,7 +310,7 @@ module Words =
                 DOCOL = vm.DOCOL.address
                 EXIT = vm.EXIT.address
             }
-
+         member x.setQUIT quit = vm.QUIT.value <- quit
         member x.create (name: string) (flags:Flags) =
             let nameSize = byte name.Length
             assert (nameSize <= 31uy)
@@ -873,6 +875,5 @@ module Words =
             let addr = vm.SP.pop()// Get xt into %eax and jump to it. After xt runs its NEXT will continue executing the current word.
             addr
         )
-
-        QUIT //cold start
+        x.setQUIT QUIT //cold start
 

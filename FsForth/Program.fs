@@ -12,8 +12,8 @@ let run () =
     let vm = ForthVM.create (65536 * 2) Memory.defaultConfig
     let code = ForthVM.CodeMemory()
     let dictWriter = Words.Writer(vm, code)
-    let coldStartCodeword = Words.init dictWriter code.DirectPredefinedWords
-    vm.IP <- coldStartCodeword
+    Words.init dictWriter code.DirectPredefinedWords
+    vm.IP <- vm.QUIT.address
 
     let wordsList = ForthDebug.getWordsList vm
 
