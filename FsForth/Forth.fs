@@ -91,8 +91,10 @@ module Memory =
 
     type InputBuffer(memory : Memory, cursor : Cursor)=
         let readStdin (memory:Memory) span = 
+            
             use inp = System.Console.OpenStandardInput()
-            inp.Read(memory, int span.address, int span.size) 
+            let count = inp.Read(memory, int span.address, int span.size) 
+            count
         let mutable bufftop = cursor.span.address 
         do 
             if cursor.isInverse then failwith "not possible to use inverse memory as buffer"
@@ -152,7 +154,9 @@ module Memory =
     
         member x.apply f = x.peek 0 |> f |> setInt memory cursor.current 
 
-    type Variable(memory:Memory, cursor : Cursor)=
+    type Variable(memory:Memory, cursor : Cursor, init: int)=
+        do  
+            setInt memory cursor.span.address init
         member x.address = cursor.span.address
         member x.value 
             with get () = getInt memory cursor.span.address
@@ -247,6 +251,8 @@ module ForthVM =
             let c = createCursor address bytes isInverse
             init (memory,c)
 
+        let var init (memory, cursor) = Variable(memory, cursor, init)
+
         let reserveString (str:string) = 
             let arr = Encoding.ASCII.GetBytes str
             let init (m,c) = copyFromBytes m c.span.address arr
@@ -261,18 +267,18 @@ module ForthVM =
             input_buffer = allocate config.BUFFER_SIZE false InputBuffer
             out_buffer= allocate config.BUFFER_SIZE false OutputBuffer
             word_buffer = allocate 32 false StringBuffer
-            STATE = allocate baseSize false Variable
-            LATEST = allocate baseSize false Variable
-            HERE = allocate baseSize false Variable
-            BASE = allocate baseSize false Variable
+            STATE = allocate baseSize false <| var 0
+            LATEST = allocate baseSize false <| var 0
+            HERE = allocate baseSize false <| var 0
+            BASE = allocate baseSize false <| var 10
             errmsg = reserveString "PARSE ERROR: "
-            errmsgnl = reserveString "\n"
+            errmsgnl = reserveString Environment.NewLine
             IP = 0
             W = 0
-            NEXT = allocate baseSize false Variable
-            DOCOL = allocate baseSize false Variable
-            EXIT = allocate baseSize false Variable
-            QUIT = allocate baseSize false Variable
+            NEXT = allocate baseSize false <| var 0
+            DOCOL = allocate baseSize false <| var 0
+            EXIT = allocate baseSize false <| var 0
+            QUIT = allocate baseSize false <| var 0
         }
 
 module Words = 
@@ -638,18 +644,18 @@ module Words =
             words.NEXT 
         )
             
-        let rec readWord vm mode =
+        let rec readWord vm mode length : Memory.Span =
             let c = vm.input_buffer.get() 
             match (char c,mode) with
-                | ('\n', ReadMode.COMMENT) -> readWord vm ReadMode.SKIP
-                | (_, ReadMode.COMMENT) -> readWord vm ReadMode.COMMENT
-                | (c, ReadMode.SKIP) when c = ' ' || c = '\t' -> readWord vm ReadMode.SKIP
-                | (c, ReadMode.WORD) when c = ' ' || c = '\t' -> vm.word_buffer.str
-                | ('/', ReadMode.SKIP) -> readWord vm ReadMode.COMMENT
+                | ('\n', ReadMode.COMMENT) -> readWord vm ReadMode.SKIP 0
+                | (_, ReadMode.COMMENT) -> readWord vm ReadMode.COMMENT 0
+                | (c, ReadMode.SKIP) when c = ' ' || c = '\t' || c = '\r' -> readWord vm ReadMode.SKIP 0
+                | (c, ReadMode.WORD) when c = ' ' || c = '\t' || c = '\r' -> { address = vm.word_buffer.str.address; size = length}
+                | ('/', ReadMode.SKIP) -> readWord vm ReadMode.COMMENT 0
                 | (_, _) -> vm.word_buffer.write c
-                            readWord vm ReadMode.WORD
+                            readWord vm ReadMode.WORD (length + 1)
 
-        let _WORD vm = readWord vm ReadMode.SKIP
+        let _WORD vm = readWord vm ReadMode.SKIP 0
 
         let WORD = x.defcodeRetCodeword "WORD" Flags.NONE (fun vm -> 
             let str = _WORD vm
@@ -663,20 +669,19 @@ module Words =
             let mutable n = 0
             let mutable idx = 0
 
-            let next() = let c = vm.memory.[str.address]
+            let next() = let c = vm.memory.[str.address + idx]
                          idx <- idx + 1
                          int c
 
-            let mutable c = next()
+            let mutable c = vm.memory.[str.address]
             let isNegative = '-' = char c
-            if isNegative then c <- next()
+            if isNegative then idx <- 1
             let mutable cnt = true
-            while cnt do
+            while cnt && idx < str.size do
                 n <- n * radix
                 let d = next() - (int '0')
                 if d > radix then cnt <- false
-                else n <- n + d * radix
-                cnt <- idx < str.size
+                else n <- n + d
             
             let count = if str.size = 0 then 0 else str.size - idx
 
@@ -854,9 +859,13 @@ module Words =
                          vm.out_buffer.setString <| vm.input_buffer.GetLast 40
                          vm.out_buffer.setString vm.errmsgnl
                          words.NEXT
-                    else vm.SP.push number
-                         _COMMA vm LIT
-                         words.NEXT
+                    else if vm.STATE.value = 0// Are we compiling or executing?vm.SP.push number
+                        then vm.SP.push number// Jump if executing.
+                             words.NEXT
+                        else // Compiling - just append the word to the current dictionary definition.
+                            _COMMA vm LIT
+                            _COMMA vm number
+                            words.NEXT
         )
         
         let QUIT = x.defwordRetCodeword "QUIT" Flags.NONE
