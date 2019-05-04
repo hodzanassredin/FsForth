@@ -162,14 +162,9 @@ module ForthVM =
 
     type FnPointer = Int32
     type PredefinedWords = {
-        NEXT : Int32
-        NEST : Int32
-        UNNEST : Int32
-        //symonims
-        EXIT : Int32
-        DOCOL : Int32
-
-        CONST : Int32
+        NEXT : FnPointer
+        DOCOL : FnPointer //NEST
+        EXIT : FnPointer//UNNEST
     }
     type Fn = ForthVM -> FnPointer
     
@@ -188,33 +183,30 @@ module ForthVM =
             getInt vm.memory vm.W
         let next = addFn next
         //alternative names: docolon, enter
-        let nest (vm:ForthVM) = 
+        let docol (vm:ForthVM) = 
             vm.RSP.push(int vm.IP)
             vm.IP <- vm.W
             vm.IP <- vm.IP + baseSize
             next
-        let nest = addFn nest
+        let docol = addFn docol
         //alternative names: exit
-        let unnest (vm:ForthVM) =
+        let exit (vm:ForthVM) =
             vm.IP <- vm.RSP.pop() 
             next
     
-        let unnest = addFn unnest
+        let exit = addFn exit
 
         let constFn (vm:ForthVM) =
             let value = getInt vm.memory (vm.IP + baseSize)
             vm.SP.push value 
             next
-    
-        member x.PredefinedWords = {
-            NEXT = next
-            NEST = nest
-            UNNEST = unnest
-            //symonims
-            EXIT = unnest
-            DOCOL = nest
 
-            CONST = addFn constFn
+        member x.CONST = addFn constFn
+    
+        member x.DirectPredefinedWords = {
+            NEXT = next
+            DOCOL = docol
+            EXIT = exit
         }
 
         member x.addFunction = addFn
@@ -238,9 +230,12 @@ module ForthVM =
         errmsgnl : Span
         mutable IP : int //istruction pointer in bytes
         mutable W : int //work
-    }
 
-    
+        //indirect fn calls
+        NEXT : Variable
+        DOCOL : Variable
+        EXIT : Variable
+    }
 
     let create size config  = 
         let memory = createMemory size
@@ -256,7 +251,6 @@ module ForthVM =
                              c.span
             allocate arr.Length false init
         {
-            
             memory = memory
             allocated = allocated
             data = allocate config.INITIAL_DATA_SEGMENT_SIZE false snd
@@ -273,6 +267,9 @@ module ForthVM =
             errmsgnl = reserveString "\n"
             IP = 0
             W = 0
+            NEXT = allocate baseSize false Variable
+            DOCOL = allocate baseSize false Variable
+            EXIT = allocate baseSize false Variable
         }
 
 module Words = 
@@ -300,8 +297,17 @@ module Words =
         let writeString (str:String) = Encoding.ASCII.GetBytes str |> Array.iter writeByte 
 
         let align () = vm.HERE.value <- Memory.pad vm.HERE.value  
-
         
+        member x.setIndirectPredefinedWords () =
+            vm.NEXT.value <- code.DirectPredefinedWords.NEXT
+            vm.DOCOL.value <- code.DirectPredefinedWords.DOCOL
+            vm.EXIT.value <- code.DirectPredefinedWords.EXIT
+            {
+                NEXT = vm.NEXT.address
+                DOCOL = vm.DOCOL.address
+                EXIT = vm.EXIT.address
+            }
+
         member x.create (name: string) (flags:Flags) =
             let nameSize = byte name.Length
             assert (nameSize <= 31uy)
@@ -314,7 +320,7 @@ module Words =
             writeString name
             align()
 
-        member x.writeCodewordPayloadRetCodeword (name: string) (flags:Flags) (codeword:Int32) (payload:Int32[]) = 
+        member x.writeCodewordPayloadRetCodeword (name: string) (flags:Flags) (codeword:FnPointer) (payload:Int32[]) = 
             x.create name flags 
             let codewordAddr = vm.HERE.value
             write codeword
@@ -323,38 +329,36 @@ module Words =
             codewordAddr
 
         member x.defwordRetCodeword (name: string) (flags:Flags) (program:Int32[]) = 
-            x.writeCodewordPayloadRetCodeword name flags code.PredefinedWords.NEST program
+            x.writeCodewordPayloadRetCodeword name flags code.DirectPredefinedWords.DOCOL program
 
         member x.defword (name: string) (flags:Flags) (program:Int32[]) = 
             x.defwordRetCodeword name flags program |>ignore
 
         //add native word
-        member x.defcodeRetAddr (name: string) (flags:Flags) (f:Fn) = 
+        member x.defcodeRetCodeword (name: string) (flags:Flags) (f:Fn) = 
             let fAddr = code.addFunction f
-            x.create name flags 
-            write fAddr 
-            fAddr
-        member x.defcode (name: string) (flags:Flags) (f:Fn) = x.defcodeRetAddr name flags f |> ignore
+            x.writeCodewordPayloadRetCodeword name flags fAddr Array.empty
 
-        member x.defconstRetAddr (name: string) (flags:Flags) (value:ForthVM ->Int32) = 
+        member x.defcode (name: string) (flags:Flags) (f:Fn) = x.defcodeRetCodeword name flags f |> ignore
+
+        member x.defconstRetCodeword (name: string) (flags:Flags) (value:ForthVM ->Int32) = 
             let value = value vm
-            x.writeCodewordPayloadRetCodeword name flags code.PredefinedWords.CONST [|value|]
+            x.writeCodewordPayloadRetCodeword name flags code.CONST [|value|]
 
         member x.defconst (name: string) (flags:Flags) (value:ForthVM ->Int32) = 
-            x.defconstRetAddr name flags value |> ignore
+            x.defconstRetCodeword name flags value |> ignore
         //add variable
-        member x.defvarRetAddr (name: string) (flags:Flags) (varAddress:ForthVM -> Int32) (initial:Int32 option) = 
+        member x.defvarRetCodeword (name: string) (flags:Flags) (varAddress:ForthVM -> Int32) (initial:Int32 option) = 
             let varAddress = varAddress vm
             match initial with  
                 | Some(initial) -> Memory.setInt vm.memory varAddress initial
                 | _ -> ()
-            x.defconstRetAddr name flags (fun vm -> varAddress)
-        member x.defvar (name: string) (flags:Flags) (varAddress:ForthVM -> Int32) (initial:Int32 option) = x.defvarRetAddr name flags varAddress initial |> ignore
-        
+            x.defconstRetCodeword name flags (fun vm -> varAddress)
+        member x.defvar (name: string) (flags:Flags) (varAddress:ForthVM -> Int32) (initial:Int32 option) = x.defvarRetCodeword name flags varAddress initial |> ignore
         
         
     let init (x: Writer) (words:PredefinedWords) = 
-        
+        let codewords = x.setIndirectPredefinedWords ()
         x.defcode "DROP" Flags.NONE (fun vm -> 
             vm.SP.pop() |> ignore
             words.NEXT
@@ -484,7 +488,7 @@ module Words =
         def apply2 "XOR" (^^^) 
         def apply "INVERT" (~~~) 
     
-        let LIT = x.defcodeRetAddr "LIT" Flags.NONE (fun vm ->
+        let LIT = x.defcodeRetCodeword "LIT" Flags.NONE (fun vm ->
             vm.W <- vm.IP
             vm.IP <- vm.IP + Memory.baseSize
             Memory.getInt vm.memory vm.W |> vm.SP.push
@@ -496,7 +500,7 @@ module Words =
             Memory.setInt vm.memory address data
             words.NEXT 
         )
-        let FETCH = x.defcodeRetAddr "@" Flags.NONE (fun vm -> 
+        let FETCH = x.defcodeRetCodeword "@" Flags.NONE (fun vm -> 
             let address = vm.SP.pop()
             let data = Memory.getInt vm.memory address 
             vm.SP.push data
@@ -554,13 +558,13 @@ module Words =
 
         x.defvar "STATE" Flags.NONE (fun vm -> vm.STATE.address) Option.None
         x.defvar "HERE" Flags.NONE (fun vm -> vm.HERE.address) Option.None
-        let LATEST = x.defvarRetAddr "LATEST" Flags.NONE (fun vm -> vm.LATEST.address) Option.None //name_SYSCALL0 // SYSCALL0 must be last in built-in dictionary
+        let LATEST = x.defvarRetCodeword "LATEST" Flags.NONE (fun vm -> vm.LATEST.address) Option.None //name_SYSCALL0 // SYSCALL0 must be last in built-in dictionary
         x.defvar "BASE" Flags.NONE (fun vm -> vm.BASE.address) Option.None
         
         x.defconst "S0" Flags.NONE (fun vm -> vm.SP.S0)
         x.defconst "VERSION" Flags.NONE (fun vm -> 1)
-        let RZ = x.defconstRetAddr "R0" Flags.NONE (fun vm -> vm.RSP.S0)
-        x.defconst "DOCOL" Flags.NONE (fun vm -> words.DOCOL)
+        let RZ = x.defconstRetCodeword "R0" Flags.NONE (fun vm -> vm.RSP.S0)
+        x.defconst "DOCOL" Flags.NONE (fun vm -> words.DOCOL)//probaly words -> codewords
         x.defconst "F_IMMED" Flags.NONE (fun vm ->  int Flags.IMMEDIATE)
         x.defconst "F_HIDDEN" Flags.NONE (fun vm ->  int Flags.HIDDEN)
         x.defconst "F_LENMASK" Flags.NONE (fun vm -> LENMASK)
@@ -597,7 +601,7 @@ module Words =
             words.NEXT 
         )
         //set return stack pointer
-        let RSPSTORE = x.defcodeRetAddr "RSP!" Flags.NONE (fun vm -> 
+        let RSPSTORE = x.defcodeRetCodeword "RSP!" Flags.NONE (fun vm -> 
             vm.RSP.top <- vm.SP.pop()
             words.NEXT 
         )
@@ -644,7 +648,7 @@ module Words =
 
         let _WORD vm = readWord vm ReadMode.SKIP
 
-        let WORD = x.defcodeRetAddr "WORD" Flags.NONE (fun vm -> 
+        let WORD = x.defcodeRetCodeword "WORD" Flags.NONE (fun vm -> 
             let str = _WORD vm
             vm.SP.push str.address
             vm.SP.push str.size
@@ -704,7 +708,7 @@ module Words =
             wordAddr
                      
 
-        let FIND = x.defcodeRetAddr "FIND" Flags.NONE (fun vm -> 
+        let FIND = x.defcodeRetCodeword "FIND" Flags.NONE (fun vm -> 
             let length = vm.SP.pop()
             let address = vm.SP.pop()
             let addrOfDictEntry = _FIND vm {address = address; size = length }
@@ -735,7 +739,7 @@ module Words =
                 arr.[i] <- char (vm.memory.[address + i])
             new String(arr)
 
-        let CREATE = x.defcodeRetAddr "CREATE" Flags.NONE (fun vm -> 
+        let CREATE = x.defcodeRetCodeword "CREATE" Flags.NONE (fun vm -> 
             let length = vm.SP.pop()
             let address = vm.SP.pop()
             let name = readString vm address length
@@ -747,17 +751,17 @@ module Words =
             Memory.setInt vm.memory address v
             vm.HERE.value <-address + Memory.baseSize
 
-        let COMMA = x.defcodeRetAddr "," Flags.NONE (fun vm -> 
+        let COMMA = x.defcodeRetCodeword "," Flags.NONE (fun vm -> 
             let v = vm.SP.pop()
             _COMMA vm v
             words.NEXT 
         )
 
-        let LBRAC = x.defcodeRetAddr "[" Flags.IMMEDIATE (fun vm -> 
+        let LBRAC = x.defcodeRetCodeword "[" Flags.IMMEDIATE (fun vm -> 
             vm.STATE.value <- 0
             words.NEXT 
         )
-        let RBRAC = x.defcodeRetAddr "]" Flags.IMMEDIATE (fun vm -> 
+        let RBRAC = x.defcodeRetCodeword "]" Flags.IMMEDIATE (fun vm -> 
             vm.STATE.value <- 1
             words.NEXT 
         )
@@ -769,36 +773,36 @@ module Words =
             Memory.setInt vm.memory flagsAddress flagsLen
             words.NEXT 
 
-        let IMMEDIATE = x.defcodeRetAddr "IMMEDIATE" Flags.IMMEDIATE (toggleLastWordFlag Flags.IMMEDIATE)
+        let IMMEDIATE = x.defcodeRetCodeword "IMMEDIATE" Flags.IMMEDIATE (toggleLastWordFlag Flags.IMMEDIATE)
 
-        let HIDDEN = x.defcodeRetAddr "HIDDEN" Flags.IMMEDIATE (toggleLastWordFlag Flags.HIDDEN)
+        let HIDDEN = x.defcodeRetCodeword "HIDDEN" Flags.IMMEDIATE (toggleLastWordFlag Flags.HIDDEN)
 
         x.defword ":" Flags.NONE 
             [|
                 WORD;// Get the name of the new word
                 CREATE;// CREATE the dictionary entry / header
-                LIT; words.DOCOL; COMMA;// Append DOCOL  (the codeword).
+                LIT; codewords.DOCOL; COMMA;// Append DOCOL  (the codeword).
                 LATEST; FETCH; HIDDEN // Make the word hidden (see below for definition).
                 RBRAC;// Go into compile mode.
-                words.EXIT// Return from the function.
+                codewords.EXIT// Return from the function.
             |]
         
         x.defword ";" Flags.IMMEDIATE 
             [|
-                LIT; words.EXIT; COMMA;// Append EXIT (so the word will return).
+                LIT; codewords.EXIT; COMMA;// Append EXIT (so the word will return).
                 LATEST; FETCH; HIDDEN; // Toggle hidden flag -- unhide the word (see below for definition).
                 LBRAC;// Go back to IMMEDIATE mode.
-                words.EXIT;// Return from the function.
+                codewords.EXIT;// Return from the function.
             |]
-        x.defword "HIDE" Flags.NONE [|WORD;FIND;HIDDEN;words.EXIT|]
+        x.defword "HIDE" Flags.NONE [|WORD;FIND;HIDDEN;codewords.EXIT|]
 
-        let TICK = x.defcodeRetAddr "'" Flags.NONE (fun vm ->
+        let TICK = x.defcodeRetCodeword "'" Flags.NONE (fun vm ->
             vm.SP.push <| Memory.getInt vm.memory vm.IP//todo check
             vm.IP <- vm.IP + Memory.baseSize
             words.NEXT 
         )
 
-        let BRANCH = x.defcodeRetAddr "BRANCH" Flags.NONE (fun vm ->
+        let BRANCH = x.defcodeRetCodeword "BRANCH" Flags.NONE (fun vm ->
             vm.IP <- vm.IP + Memory.getInt vm.memory vm.IP // add the offset to the instruction pointer
             words.NEXT 
         )
@@ -825,7 +829,7 @@ module Words =
         )
 
 
-        let INTERPRET = x.defcodeRetAddr "INTERPRET" Flags.NONE (fun vm ->
+        let INTERPRET = x.defcodeRetCodeword "INTERPRET" Flags.NONE (fun vm ->
             let word = _WORD vm // Returns %ecx = length, %edi = pointer to word.
             let pointer = _FIND vm word//pointer to header or 0 if not found.
             if pointer <> 0 //found word
@@ -880,5 +884,5 @@ module Forth =
         let vm = ForthVM.create (65536 * 2) Memory.defaultConfig
         let code = ForthVM.CodeMemory()
         let dictWriter = Words.Writer(vm, code)
-        let coldStart = Words.init dictWriter code.PredefinedWords
+        let coldStart = Words.init dictWriter code.DirectPredefinedWords
         runFn vm code coldStart
