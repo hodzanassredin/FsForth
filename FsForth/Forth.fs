@@ -74,6 +74,7 @@ module Memory =
     let setInt (memory:Memory) (address:int) (v:int) = BitConverter.GetBytes(v).CopyTo(memory, address |> int);
 
     let copyFromBytes (memory:Memory) (address:int) (arr:byte array) = arr.CopyTo(memory, int address)
+    let copyToBytes (memory:Memory) (address:int) (arr:byte array) = Array.Copy(memory, address, arr, 0, arr.Length)
     
     let write (memory:Memory) cursor b = 
         memory.[cursor.current] <- b
@@ -316,7 +317,7 @@ module Words =
             let curlink = vm.LATEST.value
             vm.LATEST.value <- vm.HERE.value//set link
             write(curlink)
-            nameSize + flags |> int |> write
+            nameSize + flags |> writeByte
             writeString name
             align()
 
@@ -875,14 +876,3 @@ module Words =
 
         QUIT //cold start
 
-module Forth =
-    let rec private runFn (vm:ForthVM.ForthVM) (code:ForthVM.CodeMemory) (fn : ForthVM.FnPointer)= 
-        let fn = code.get fn vm
-        runFn vm code fn
-
-    let run () =
-        let vm = ForthVM.create (65536 * 2) Memory.defaultConfig
-        let code = ForthVM.CodeMemory()
-        let dictWriter = Words.Writer(vm, code)
-        let coldStart = Words.init dictWriter code.DirectPredefinedWords
-        runFn vm code coldStart

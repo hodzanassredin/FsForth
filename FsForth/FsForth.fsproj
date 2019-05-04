@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="Forth.fs" />
+    <Compile Include="ForthDebug.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
