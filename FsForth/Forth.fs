@@ -157,7 +157,7 @@ module Memory =
             with get () = getInt memory cursor.span.address
             and set v = setInt memory cursor.span.address v
 
-module Forth =
+module ForthVM =
     open Memory
 
     type FnPointer = Int32
@@ -238,7 +238,6 @@ module Forth =
         errmsgnl : Span
         mutable IP : int //istruction pointer in bytes
         mutable W : int //work
-        mutable QUIT : int //address of the cold start fn
     }
 
     
@@ -274,11 +273,10 @@ module Forth =
             errmsgnl = reserveString "\n"
             IP = 0
             W = 0
-            QUIT = 0
         }
 
 module Words = 
-    open Forth
+    open ForthVM
     [<Flags>]
     type Flags =
         | NONE = 0
@@ -355,7 +353,7 @@ module Words =
         
         
         
-    let init (x: Writer, words:PredefinedWords) = 
+    let init (x: Writer) (words:PredefinedWords) = 
         
         x.defcode "DROP" Flags.NONE (fun vm -> 
             vm.SP.pop() |> ignore
@@ -872,3 +870,15 @@ module Words =
         )
 
         QUIT //cold start
+
+module Forth =
+    let rec private runFn (vm:ForthVM.ForthVM) (code:ForthVM.CodeMemory) (fn : ForthVM.FnPointer)= 
+        let fn = code.get fn vm
+        runFn vm code fn
+
+    let run () =
+        let vm = ForthVM.create (65536 * 2) Memory.defaultConfig
+        let code = ForthVM.CodeMemory()
+        let dictWriter = Words.Writer(vm, code)
+        let coldStart = Words.init dictWriter code.PredefinedWords
+        runFn vm code coldStart
