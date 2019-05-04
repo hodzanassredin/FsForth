@@ -32,8 +32,8 @@ module Memory =
         address : int
         size : int
     }
-
-    let top span = span.address + span.size
+    
+    let top span = span.address + span.size - 1
 
     type Cursor = {
         span : Span
@@ -127,6 +127,11 @@ module Memory =
             reset cursor
 
         member x.setString span = 
+            let debug = [span.address..(top span)] 
+                        |> Seq.ofList 
+                        |> Seq.map (Array.get memory)
+                        |> Seq.map char 
+                        |> Array.ofSeq
             for i in span.address..(top span) do
                 x.set memory.[i]
 
@@ -148,7 +153,7 @@ module Memory =
             setInt memory cursor.current v
     
         member x.pop () = 
-            assert (cursor.current < top cursor.span)
+            assert (cursor.current <= top cursor.span)
             let v = getInt memory cursor.current
             inc cursor baseSize |> ignore
             v
@@ -710,7 +715,7 @@ module Words =
             while cnt do
                 if wordAddr = 0 
                 then cnt <- false
-                else let flagsLen = Memory.getInt vm.memory (wordAddr + Memory.baseSize)
+                else let flagsLen = vm.memory.[wordAddr + Memory.baseSize] |> int
                      let flagsLen = (int Flags.HIDDEN ||| LENMASK) &&& flagsLen
                      if flagsLen = str.size && eqStrings vm str.address (wordAddr + Memory.baseSize + 1) str.size
                      then cnt <- false
@@ -725,9 +730,11 @@ module Words =
             vm.SP.push addrOfDictEntry
             words.NEXT 
         )
+
+
         let _TCFA (vm:ForthVM) linkAddress = 
             let flagsLenAddress = linkAddress + Memory.baseSize
-            let length = Memory.getInt vm.memory flagsLenAddress &&& LENMASK
+            let length = vm.memory.[flagsLenAddress] |> int &&& LENMASK
             let cfaAddress = flagsLenAddress + 1 + length |> Memory.pad
             cfaAddress
 
@@ -778,9 +785,9 @@ module Words =
 
         let toggleLastWordFlag (flag:Flags) (vm:ForthVM)  = 
             let flagsAddress = vm.LATEST.value + Memory.baseSize
-            let flagsLen = Memory.getInt vm.memory flagsAddress//todo or get byte
-            let flagsLen = flagsLen ^^^ int flag //toggle immediate
-            Memory.setInt vm.memory flagsAddress flagsLen
+            let flagsLen = vm.memory.[flagsAddress]|> int
+            let flagsLen = flagsLen ^^^ int flag //toggle flag
+            vm.memory.[flagsAddress] <- byte flagsLen
             words.NEXT 
 
         let IMMEDIATE = x.defcodeRetCodeword "IMMEDIATE" Flags.IMMEDIATE (toggleLastWordFlag Flags.IMMEDIATE)
@@ -844,13 +851,13 @@ module Words =
             let pointer = _FIND vm word//pointer to header or 0 if not found.
             if pointer <> 0 //found word
             then
-                let nameFlags = Memory.getInt vm.memory pointer
+                let nameFlags = vm.memory.[pointer + Memory.baseSize] |> int
                 let codeword = _TCFA vm pointer
                 let isImmediate = (nameFlags &&& int Flags.IMMEDIATE) <> 0
                 if isImmediate
                 then codeword// If IMMED, jump straight to executing.
                 else if vm.STATE.value = 0// Are we compiling or executing?
-                        then codeword// Jump if executing.
+                        then Memory.getInt vm.memory codeword// Jump if executing.
                         else // Compiling - just append the word to the current dictionary definition.
                             _COMMA vm codeword
                             words.NEXT
