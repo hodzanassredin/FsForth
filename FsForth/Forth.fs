@@ -85,8 +85,11 @@ module Memory =
         inc cursor baseSize |> ignore
 
     type StringBuffer(memory : Memory, cursor : Cursor)=
-        member x.str = cursor.span
-        member x.reset () = reset cursor
+        member x.getStrAndReset () = 
+            let res = {address = cursor.span.address; size = used cursor }
+            reset cursor
+            res
+
         member x.write c = write memory cursor c
 
     type InputBuffer(memory : Memory, cursor : Cursor)=
@@ -119,7 +122,7 @@ module Memory =
             if cursor.isInverse then failwith "not possible to use inverse memory as buffer"
         member x.flush() =
             use out = System.Console.OpenStandardOutput()
-            out.Write(memory, int cursor.span.address, int cursor.current)
+            out.Write(memory, int cursor.span.address, used cursor)
             out.Flush()
             reset cursor
 
@@ -128,8 +131,8 @@ module Memory =
                 x.set memory.[i]
 
         member x.set c = 
-            if isFull cursor then x.flush()
             write memory cursor c
+            if isFull cursor || c = byte '\n' then x.flush()
 
     type Stack(memory : Memory, cursor : Cursor)=
         do 
@@ -643,19 +646,19 @@ module Words =
             vm.SP.pop() |> byte |> vm.out_buffer.set
             words.NEXT 
         )
-            
-        let rec readWord vm mode length : Memory.Span =
+         
+        let rec readWord vm mode : Memory.Span =
             let c = vm.input_buffer.get() 
             match (char c,mode) with
-                | ('\n', ReadMode.COMMENT) -> readWord vm ReadMode.SKIP 0
-                | (_, ReadMode.COMMENT) -> readWord vm ReadMode.COMMENT 0
-                | (c, ReadMode.SKIP) when c = ' ' || c = '\t' || c = '\r' -> readWord vm ReadMode.SKIP 0
-                | (c, ReadMode.WORD) when c = ' ' || c = '\t' || c = '\r' -> { address = vm.word_buffer.str.address; size = length}
-                | ('/', ReadMode.SKIP) -> readWord vm ReadMode.COMMENT 0
+                | ('\n', ReadMode.COMMENT) -> readWord vm ReadMode.SKIP
+                | (_, ReadMode.COMMENT) -> readWord vm ReadMode.COMMENT
+                | (c, ReadMode.SKIP) when c = ' ' || c = '\t' || c = '\r' || c = '\n' -> readWord vm ReadMode.SKIP 
+                | (c, ReadMode.WORD) when c = ' ' || c = '\t' || c = '\r' || c = '\n' -> vm.word_buffer.getStrAndReset()
+                | ('/', ReadMode.SKIP) -> readWord vm ReadMode.COMMENT
                 | (_, _) -> vm.word_buffer.write c
-                            readWord vm ReadMode.WORD (length + 1)
+                            readWord vm ReadMode.WORD
 
-        let _WORD vm = readWord vm ReadMode.SKIP 0
+        let _WORD vm = readWord vm ReadMode.SKIP
 
         let WORD = x.defcodeRetCodeword "WORD" Flags.NONE (fun vm -> 
             let str = _WORD vm
@@ -669,19 +672,18 @@ module Words =
             let mutable n = 0
             let mutable idx = 0
 
-            let next() = let c = vm.memory.[str.address + idx]
-                         idx <- idx + 1
-                         int c
+            let current() = int vm.memory.[str.address + idx]
 
-            let mutable c = vm.memory.[str.address]
+            let mutable c = current ()
             let isNegative = '-' = char c
             if isNegative then idx <- 1
             let mutable cnt = true
             while cnt && idx < str.size do
                 n <- n * radix
-                let d = next() - (int '0')
-                if d > radix then cnt <- false
+                let d = current() - (int '0')
+                if d > radix || d < 0 then cnt <- false
                 else n <- n + d
+                     idx <- idx + 1
             
             let count = if str.size = 0 then 0 else str.size - idx
 
