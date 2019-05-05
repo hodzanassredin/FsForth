@@ -353,7 +353,11 @@ module Words =
 
         member x.defconstRetCodeword (name: string) (flags:Flags) (value:ForthVM ->Int32) = 
             let value = value vm
-            x.writeCodewordPayloadRetCodeword name flags code.CONST [|value|]
+            //x.writeCodewordPayloadRetCodeword name flags code.CONST [|value|]
+            x.defcodeRetCodeword name flags (fun vm -> 
+                vm.SP.push value
+                code.DirectPredefinedWords.NEXT
+            )
 
         member x.defconst (name: string) (flags:Flags) (value:ForthVM ->Int32) = 
             x.defconstRetCodeword name flags value |> ignore
@@ -794,7 +798,7 @@ module Words =
             [|
                 WORD;// Get the name of the new word
                 CREATE;// CREATE the dictionary entry / header
-                LIT; codewords.DOCOL; COMMA;// Append DOCOL  (the codeword).
+                LIT; words.DOCOL; COMMA;// Append DOCOL  (the codeword).
                 LATEST; FETCH; HIDDEN // Make the word hidden (see below for definition).
                 RBRAC;// Go into compile mode.
                 codewords.EXIT// Return from the function.
