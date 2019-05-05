@@ -197,7 +197,7 @@ module ForthVM =
         let next = addFn next
         //alternative names: docolon, enter
         let docol (vm:ForthVM) = 
-            vm.RSP.push(int vm.IP)
+            vm.RSP.push vm.IP
             vm.IP <- vm.W
             vm.IP <- vm.IP + baseSize
             next
@@ -241,8 +241,8 @@ module ForthVM =
         BASE : Variable
         errmsg : Span
         errmsgnl : Span
-        mutable IP : int //istruction pointer in bytes
-        mutable W : int //work
+        mutable IP : int //istruction pointer in bytes esi
+        mutable W : int //work eax
 
         //indirect fn calls
         NEXT : Variable
@@ -783,16 +783,22 @@ module Words =
             words.NEXT 
         )
 
-        let toggleLastWordFlag (flag:Flags) (vm:ForthVM)  = 
-            let flagsAddress = vm.LATEST.value + Memory.baseSize
+        let toggleWordFlag wordAddress (flag:Flags) (vm:ForthVM)  = 
+            let flagsAddress = wordAddress + Memory.baseSize
             let flagsLen = vm.memory.[flagsAddress]|> int
             let flagsLen = flagsLen ^^^ int flag //toggle flag
             vm.memory.[flagsAddress] <- byte flagsLen
             words.NEXT 
 
-        let IMMEDIATE = x.defcodeRetCodeword "IMMEDIATE" Flags.IMMEDIATE (toggleLastWordFlag Flags.IMMEDIATE)
+        let immediate (vm:ForthVM) = toggleWordFlag vm.LATEST.address Flags.IMMEDIATE vm
 
-        let HIDDEN = x.defcodeRetCodeword "HIDDEN" Flags.IMMEDIATE (toggleLastWordFlag Flags.HIDDEN)
+        let IMMEDIATE = x.defcodeRetCodeword "IMMEDIATE" Flags.IMMEDIATE immediate
+
+        let hidden (vm:ForthVM) = 
+            let addr = vm.SP.pop()
+            toggleWordFlag addr Flags.HIDDEN vm
+
+        let HIDDEN = x.defcodeRetCodeword "HIDDEN" Flags.IMMEDIATE hidden
 
         x.defword ":" Flags.NONE 
             [|
@@ -847,6 +853,10 @@ module Words =
 
 
         let INTERPRET = x.defcodeRetCodeword "INTERPRET" Flags.NONE (fun vm ->
+            let exec cfa = 
+                vm.W<-cfa
+                Memory.getInt vm.memory cfa
+
             let word = _WORD vm // Returns %ecx = length, %edi = pointer to word.
             let pointer = _FIND vm word//pointer to header or 0 if not found.
             if pointer <> 0 //found word
@@ -855,9 +865,9 @@ module Words =
                 let codeword = _TCFA vm pointer
                 let isImmediate = (nameFlags &&& int Flags.IMMEDIATE) <> 0
                 if isImmediate
-                then codeword// If IMMED, jump straight to executing.
+                then exec codeword// If IMMED, jump straight to executing.
                 else if vm.STATE.value = 0// Are we compiling or executing?
-                        then Memory.getInt vm.memory codeword// Jump if executing.
+                        then exec codeword// Jump if executing.
                         else // Compiling - just append the word to the current dictionary definition.
                             _COMMA vm codeword
                             words.NEXT
