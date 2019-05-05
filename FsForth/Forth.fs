@@ -37,34 +37,31 @@ module Memory =
 
     type Cursor = {
         span : Span
-        isInverse : bool
         mutable current : int
     }
-    let reset cursor = cursor.current <- if cursor.isInverse then cursor.span.address + cursor.span.size else cursor.span.address
-    let used cursor = if cursor.isInverse then top cursor.span - cursor.current else cursor.current - cursor.span.address
+
+
+    let reset cursor = cursor.current <- cursor.span.address
+    let used cursor = cursor.current - cursor.span.address
     let isFull cursor = used cursor = cursor.span.size
-    let createCursor address size isInverse = 
-        let c ={ 
+    let createCursor address size = 
+        { 
             span = { address = address; size = size }
-            isInverse = isInverse
-            current = 0
+            current = address
         }
-        reset c
-        c
 
-    let validate (cursor:Cursor) = ()
-        //if cursor.current < cursor.span.address || cursor.current > (top cursor.span)
-        //then failwith "broken span bounds"
+    let validate (cursor:Cursor) = 
+        if cursor.current < cursor.span.address || cursor.current > (top cursor.span)
+        then failwith "broken span bounds"
 
-    let change op noop (v:Cursor) count = 
+    let change op  (v:Cursor) count = 
         let prev = v.current
-        let op = if v.isInverse then op else noop
         v.current <- op v.current count
         validate v
         prev
 
-    let inc = change (-) (+)
-    let dec = change (+) (-) 
+    let inc = change (+)
+    let dec = change (-) 
 
     type Memory = byte[]
     let createMemory (size:int) = Array.create size 0uy 
@@ -99,8 +96,7 @@ module Memory =
             let count = inp.Read(memory, int span.address, int span.size) 
             count
         let mutable bufftop = cursor.span.address 
-        do 
-            if cursor.isInverse then failwith "not possible to use inverse memory as buffer"
+
         member x.GetLast n = 
             let count = used cursor
             let count = if n > count then count else n
@@ -118,8 +114,7 @@ module Memory =
                       x.get ()
 
     type OutputBuffer(memory : Memory, cursor : Cursor)=
-        do 
-            if cursor.isInverse then failwith "not possible to use inverse memory as buffer"
+
         member x.flush() =
             use out = System.Console.OpenStandardOutput()
             out.Write(memory, int cursor.span.address, used cursor)
@@ -140,20 +135,18 @@ module Memory =
             if isFull cursor || c = byte '\n' then x.flush()
 
     type Stack(memory : Memory, cursor : Cursor)=
-        do 
-            if not cursor.isInverse then failwith "not possible to use non inverse memory as stack"
-        member x.reset () = reset cursor
+        do
+            cursor.current <- top cursor.span
+        member x.reset () = cursor.current <- x.S0
         member x.top 
             with get () = cursor.current
             and set (value) = cursor.current <- value
         member x.S0 = top cursor.span
         member x.push v = 
-            assert (cursor.current > cursor.span.address)
             dec cursor baseSize |> ignore
             setInt memory cursor.current v
     
         member x.pop () = 
-            assert (cursor.current <= top cursor.span)
             let v = getInt memory cursor.current
             inc cursor baseSize |> ignore
             v
@@ -210,7 +203,7 @@ module ForthVM =
         let exit = addFn exit
 
         let constFn (vm:ForthVM) =
-            let value = getInt vm.memory (vm.IP + baseSize)
+            let value = getInt vm.memory (vm.W + baseSize)
             vm.SP.push value 
             next
 
@@ -253,10 +246,10 @@ module ForthVM =
 
     let create size config  = 
         let memory = createMemory size
-        let allocated = createCursor 0 size false 
-        let allocate bytes isInverse init = 
+        let allocated = createCursor 0 size 
+        let allocate bytes init = 
             let address = inc allocated bytes
-            let c = createCursor address bytes isInverse
+            let c = createCursor address bytes
             init (memory,c)
 
         let var init (memory, cursor) = Variable(memory, cursor, init)
@@ -265,28 +258,28 @@ module ForthVM =
             let arr = Encoding.ASCII.GetBytes str
             let init (m,c) = copyFromBytes m c.span.address arr
                              c.span
-            allocate arr.Length false init
+            allocate arr.Length init
         {
             memory = memory
             allocated = allocated
-            data = allocate config.INITIAL_DATA_SEGMENT_SIZE false snd
-            SP = allocate config.DATA_STACK_SIZE true Stack
-            RSP = allocate config.RETURN_STACK_SIZE true Stack
-            input_buffer = allocate config.BUFFER_SIZE false InputBuffer
-            out_buffer= allocate config.BUFFER_SIZE false OutputBuffer
-            word_buffer = allocate 32 false StringBuffer
-            STATE = allocate baseSize false <| var 0
-            LATEST = allocate baseSize false <| var 0
-            HERE = allocate baseSize false <| var 0
-            BASE = allocate baseSize false <| var 10
+            data = allocate config.INITIAL_DATA_SEGMENT_SIZE snd
+            SP = allocate config.DATA_STACK_SIZE Stack
+            RSP = allocate config.RETURN_STACK_SIZE Stack
+            input_buffer = allocate config.BUFFER_SIZE InputBuffer
+            out_buffer= allocate config.BUFFER_SIZE OutputBuffer
+            word_buffer = allocate 32 StringBuffer
+            STATE = allocate baseSize  <| var 0
+            LATEST = allocate baseSize  <| var 0
+            HERE = allocate baseSize  <| var 0
+            BASE = allocate baseSize  <| var 10
             errmsg = reserveString "PARSE ERROR: "
             errmsgnl = reserveString Environment.NewLine
             IP = 0
             W = 0
-            NEXT = allocate baseSize false <| var 0
-            DOCOL = allocate baseSize false <| var 0
-            EXIT = allocate baseSize false <| var 0
-            QUIT = allocate baseSize false <| var 0
+            NEXT = allocate baseSize  <| var 0
+            DOCOL = allocate baseSize  <| var 0
+            EXIT = allocate baseSize  <| var 0
+            QUIT = allocate baseSize  <| var 0
         }
 
 module Words = 
@@ -506,9 +499,10 @@ module Words =
         def apply "INVERT" (~~~) 
     
         let LIT = x.defcodeRetCodeword "LIT" Flags.NONE (fun vm ->
-            vm.W <- vm.IP
+            vm.W <- Memory.getInt vm.memory vm.IP//current codeword
             vm.IP <- vm.IP + Memory.baseSize
-            Memory.getInt vm.memory vm.W |> vm.SP.push
+            //let l = Memory.getInt vm.memory vm.W
+            vm.SP.push vm.W//todo fix
             words.NEXT
         )
         x.defcode "!" Flags.NONE (fun vm -> 
@@ -638,10 +632,6 @@ module Words =
             words.NEXT 
         )
 
-        x.defcode "DSP!" Flags.NONE (fun vm -> 
-            vm.SP.top <- vm.SP.pop()
-            words.NEXT 
-        )
         //io
         x.defcode "KEY" Flags.NONE (fun vm -> 
             vm.input_buffer.get() |> int |> vm.SP.push
@@ -790,7 +780,7 @@ module Words =
             vm.memory.[flagsAddress] <- byte flagsLen
             words.NEXT 
 
-        let immediate (vm:ForthVM) = toggleWordFlag vm.LATEST.address Flags.IMMEDIATE vm
+        let immediate (vm:ForthVM) = toggleWordFlag vm.LATEST.value Flags.IMMEDIATE vm
 
         let IMMEDIATE = x.defcodeRetCodeword "IMMEDIATE" Flags.IMMEDIATE immediate
 
