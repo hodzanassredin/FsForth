@@ -16,20 +16,23 @@ type Word = {
     program : string
 }
 
-let rec findName words cfa = 
-    match words with
+let rec findName (vm:ForthVM.ForthVM) words cfa = 
+    if cfa = vm.EXIT.address then "QUIT"
+    elif cfa = vm.DOCOL.address then "DOCOL"
+    elif cfa = vm.NEXT.address then "DOCOL"
+    else match words with
         | [] -> cfa.ToString()
         | h::_ when h.cfaAddress = cfa -> sprintf "%s(%d)" h.name cfa
-        | _::t -> findName t cfa
+        | _::t -> findName vm t cfa
 
-let translateProgram words word = 
+let translateProgram (vm:ForthVM.ForthVM) words word = 
     if word.cfa = 1 // is DOCOL
-    then {word with program = word.payload |> Array.map (findName words) |> String.concat " "}
+    then {word with program = word.payload |> Array.map (findName vm words) |> String.concat " "}
     else word
 
 let rec private getWords (vm:ForthVM.ForthVM) prevLink wordAddr words = 
     if wordAddr = 0
-    then words |> List.map (translateProgram words)
+    then words |> List.map (translateProgram vm words)
     else 
         let link = Memory.getInt vm.memory wordAddr
         let flagsLen = vm.memory.[wordAddr + Memory.baseSize] |> int

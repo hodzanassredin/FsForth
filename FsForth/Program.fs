@@ -4,7 +4,21 @@ open System
 open System.Runtime.InteropServices
 open Forth
 
+let printState (vm:ForthVM.ForthVM) =
+    let wordsList = ForthDebug.getWordsList vm
+    //let lastStr : String = List.last wordsList |> sprintf "%A"
+    //Console.Write("\tLAST WORD:{0}",lastStr.Replace("\n",""))
+    Console.Write("\tSTACK:{0}",vm.SP.ToString())
+    Console.Write("\tLATEST:{0}",vm.LATEST.value)
+    Console.Write("\tBASE:{0}",vm.BASE.value)
+    Console.Write("\tSTATE:{0}",vm.STATE.value)
+    Console.WriteLine("\tHERE:{0}",vm.HERE.value)
+    ()
+
+
 let rec private runFn (vm:ForthVM.ForthVM) (code:ForthVM.CodeMemory) (fn : ForthVM.FnPointer)= 
+    if fn = 83 // is interpret
+    then printState vm
     let fn = code.get fn vm
     runFn vm code fn
 

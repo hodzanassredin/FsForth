@@ -73,6 +73,12 @@ module Memory =
     let copyFromBytes (memory:Memory) (address:int) (arr:byte array) = arr.CopyTo(memory, int address)
     let copyToBytes (memory:Memory) (address:int) (arr:byte array) = Array.Copy(memory, address, arr, 0, arr.Length)
 
+    let toString (memory:Memory) span = 
+        seq {span.address..(top span)}
+        |> Seq.map (Array.get memory)
+        |> Seq.map char 
+        |> String.Concat
+
     let write (memory:Memory) cursor b = 
         memory.[cursor.current] <- b
         inc cursor 1 |> ignore
@@ -122,11 +128,7 @@ module Memory =
             reset cursor
 
         member x.setString span = 
-            let debug = [span.address..(top span)] 
-                        |> Seq.ofList 
-                        |> Seq.map (Array.get memory)
-                        |> Seq.map char 
-                        |> Array.ofSeq
+            let debug = toString memory span
             for i in span.address..(top span) do
                 x.set memory.[i]
 
@@ -154,6 +156,11 @@ module Memory =
         member x.peek (offset:int) = getInt memory (cursor.current + (baseSize * offset))
     
         member x.apply f = x.peek 0 |> f |> setInt memory cursor.current 
+        override x.ToString() = 
+            seq {x.top..baseSize..x.S0} 
+            |> Seq.map (getInt memory)
+            |> Seq.map string
+            |> String.concat ";"
 
     type Variable(memory:Memory, cursor : Cursor, init: int)=
         do  
@@ -653,7 +660,7 @@ module Words =
                 | (_, ReadMode.COMMENT) -> readWord vm ReadMode.COMMENT
                 | (c, ReadMode.SKIP) when c = ' ' || c = '\t' || c = '\r' || c = '\n' -> readWord vm ReadMode.SKIP 
                 | (c, ReadMode.WORD) when c = ' ' || c = '\t' || c = '\r' || c = '\n' -> vm.word_buffer.getStrAndReset()
-                | ('/', ReadMode.SKIP) -> readWord vm ReadMode.COMMENT
+                | ('\\', ReadMode.SKIP) -> readWord vm ReadMode.COMMENT
                 | (_, _) -> vm.word_buffer.write c
                             readWord vm ReadMode.WORD
 
@@ -852,6 +859,7 @@ module Words =
                 Memory.getInt vm.memory cfa
 
             let word = _WORD vm // Returns %ecx = length, %edi = pointer to word.
+            let debug = Memory.toString vm.memory word
             let pointer = _FIND vm word//pointer to header or 0 if not found.
             if pointer <> 0 //found word
             then
