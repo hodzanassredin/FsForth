@@ -5,27 +5,27 @@ VisualStudioVersion = 16.0.28803.156
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "FsForth", "FsForth\FsForth.fsproj", "{455BF02B-30E3-4FEF-A9AC-B16988CE10EB}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{A3673C3D-E3A1-485B-A7B0-D34A8279C47B}"
+	ProjectSection(SolutionItems) = preProject
+		jonesforth.f = jonesforth.f
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
-		Debug|x86 = Debug|x86
 		Release|Any CPU = Release|Any CPU
-		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{455BF02B-30E3-4FEF-A9AC-B16988CE10EB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{455BF02B-30E3-4FEF-A9AC-B16988CE10EB}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{455BF02B-30E3-4FEF-A9AC-B16988CE10EB}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{455BF02B-30E3-4FEF-A9AC-B16988CE10EB}.Debug|x86.Build.0 = Debug|Any CPU
 		{455BF02B-30E3-4FEF-A9AC-B16988CE10EB}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{455BF02B-30E3-4FEF-A9AC-B16988CE10EB}.Release|Any CPU.Build.0 = Release|Any CPU
-		{455BF02B-30E3-4FEF-A9AC-B16988CE10EB}.Release|x86.ActiveCfg = Release|Any CPU
-		{455BF02B-30E3-4FEF-A9AC-B16988CE10EB}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
-		SolutionGuid = {A1FE1726-01AE-4CCB-B490-E49993077110}
+		SolutionGuid = {3B6CB935-FD70-46DE-9FBC-698A63A1F383}
+		                SolutionGuid = {A1FE1726-01AE-4CCB-B490-E49993077110}
 	EndGlobalSection
 EndGlobal

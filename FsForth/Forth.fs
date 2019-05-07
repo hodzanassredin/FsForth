@@ -277,7 +277,7 @@ module ForthVM =
             word_buffer = allocate 32 StringBuffer
             STATE = allocate baseSize  <| var 0
             LATEST = allocate baseSize  <| var 0
-            HERE = allocate baseSize  <| var 0
+            HERE = allocate baseSize  <| var 1//0 is not defined word
             BASE = allocate baseSize  <| var 10
             errmsg = reserveString "PARSE ERROR: "
             errmsgnl = reserveString Environment.NewLine
@@ -449,7 +449,7 @@ module Words =
 
         let apply (vm:ForthVM) = vm.SP.apply
         let apply2 (vm:ForthVM) (f: Int32->Int32->Int32)  = vm.SP.apply (f <| vm.SP.pop())
-        let boolToBase b = if b then -1 else 0
+        let boolToBase b = if b then 1 else 0
     
         let applyBool vm f  = apply vm (fun a -> f a |> boolToBase) 
         let applyBool2 vm f  = apply2 vm (fun a b -> f a b |> boolToBase)
@@ -471,7 +471,7 @@ module Words =
         def apply "4+" <| (+) 4
         def apply "4-" <| (-) 4
         def apply2 "+" <| (+)
-        def apply2 "-" <| (-)
+        def apply2 "-" <| (fun a b -> b - a)
         def apply2 "*" <| (*)
     
         //( n1 n2 -- n3 n4 ) Divide n1 by n2, giving the single-cell remainder n3 and the single-cell quotient n4
@@ -503,7 +503,7 @@ module Words =
         def applyBool "0>" <| (>) 0
         def applyBool "0<=" <| (<=) 0
         def applyBool "0>=" <| (>=) 0
-    
+        //bitwise
         def apply2 "AND" (&&&) 
         def apply2 "OR" (|||) 
         def apply2 "XOR" (^^^) 
@@ -664,7 +664,10 @@ module Words =
                 | (_, _) -> vm.word_buffer.write c
                             readWord vm ReadMode.WORD
 
-        let _WORD vm = readWord vm ReadMode.SKIP
+        let _WORD vm = 
+            let str = readWord vm ReadMode.SKIP
+            printfn "read word %s" <| Memory.toString vm.memory str
+            str
 
         let WORD = x.defcodeRetCodeword "WORD" Flags.NONE (fun vm -> 
             let str = _WORD vm
@@ -859,18 +862,21 @@ module Words =
                 Memory.getInt vm.memory cfa
 
             let word = _WORD vm // Returns %ecx = length, %edi = pointer to word.
-            let debug = Memory.toString vm.memory word
+            
             let pointer = _FIND vm word//pointer to header or 0 if not found.
             if pointer <> 0 //found word
             then
+                let debug = Memory.toString vm.memory word
                 let nameFlags = vm.memory.[pointer + Memory.baseSize] |> int
                 let codeword = _TCFA vm pointer
                 let isImmediate = (nameFlags &&& int Flags.IMMEDIATE) <> 0
                 if isImmediate
                 then exec codeword// If IMMED, jump straight to executing.
                 else if vm.STATE.value = 0// Are we compiling or executing?
-                        then exec codeword// Jump if executing.
+                        then printfn "executing %s" debug
+                             exec codeword// Jump if executing.
                         else // Compiling - just append the word to the current dictionary definition.
+                            printfn "compiling %s" debug
                             _COMMA vm codeword
                             words.NEXT
             else // Not in the dictionary (not a word) so assume it's a literal number.
@@ -881,9 +887,11 @@ module Words =
                          vm.out_buffer.setString vm.errmsgnl
                          words.NEXT
                     else if vm.STATE.value = 0// Are we compiling or executing?vm.SP.push number
-                        then vm.SP.push number// Jump if executing.
+                        then printfn "push number %d" number
+                             vm.SP.push number// Jump if executing.
                              words.NEXT
                         else // Compiling - just append the word to the current dictionary definition.
+                            printfn "compiling LIT %d" number
                             _COMMA vm LIT
                             _COMMA vm number
                             words.NEXT
