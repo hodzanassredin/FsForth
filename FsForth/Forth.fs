@@ -1,5 +1,4 @@
-﻿
-module Forth 
+﻿module Forth 
 
 open System
 open System.Runtime.InteropServices
@@ -52,7 +51,7 @@ module Memory =
 
     let validate (cursor:Cursor) = 
         if cursor.current < cursor.span.address || cursor.current > (top cursor.span)
-        then failwith "broken span bounds"
+        then failwith <| sprintf "broken span bounds %A" cursor
 
     let change op  (v:Cursor) count = 
         let prev = v.current
@@ -99,7 +98,7 @@ module Memory =
         let readStdin (memory:Memory) span = 
             
             use inp = System.Console.OpenStandardInput()
-            let count = inp.Read(memory, int span.address, int span.size) 
+            let count = inp.Read(memory, int span.address, int span.size - 1) 
             count
         let mutable bufftop = cursor.span.address 
 
@@ -144,6 +143,7 @@ module Memory =
             with get () = cursor.current
             and set (value) = cursor.current <- value
         member x.S0 = top cursor.span
+        member x.count () = (x.S0 - x.top) / baseSize
         member x.push v = 
             dec cursor baseSize |> ignore
             setInt memory cursor.current v
@@ -466,12 +466,15 @@ module Words =
             if eax <> 0 then vm.SP.push eax
             words.NEXT 
         ) 
+
+        let flip f a b = f b a 
+
         def apply "1+" <| (+) 1
-        def apply "1-" <| (-) 1
+        def apply "1-" <| flip (-) 1
         def apply "4+" <| (+) 4
-        def apply "4-" <| (-) 4
+        def apply "4-" <| flip (-) 4
         def apply2 "+" <| (+)
-        def apply2 "-" <| (fun a b -> b - a)
+        def apply2 "-" <| flip (-)
         def apply2 "*" <| (*)
     
         //( n1 n2 -- n3 n4 ) Divide n1 by n2, giving the single-cell remainder n3 and the single-cell quotient n4
@@ -666,7 +669,7 @@ module Words =
 
         let _WORD vm = 
             let str = readWord vm ReadMode.SKIP
-            printfn "read word %s" <| Memory.toString vm.memory str
+            //printfn "read word %s" <| Memory.toString vm.memory str
             str
 
         let WORD = x.defcodeRetCodeword "WORD" Flags.NONE (fun vm -> 
@@ -866,17 +869,17 @@ module Words =
             let pointer = _FIND vm word//pointer to header or 0 if not found.
             if pointer <> 0 //found word
             then
-                let debug = Memory.toString vm.memory word
+                //let debug = Memory.toString vm.memory word
                 let nameFlags = vm.memory.[pointer + Memory.baseSize] |> int
                 let codeword = _TCFA vm pointer
                 let isImmediate = (nameFlags &&& int Flags.IMMEDIATE) <> 0
                 if isImmediate
                 then exec codeword// If IMMED, jump straight to executing.
                 else if vm.STATE.value = 0// Are we compiling or executing?
-                        then printfn "executing %s" debug
+                        then //printfn "executing %s" debug
                              exec codeword// Jump if executing.
                         else // Compiling - just append the word to the current dictionary definition.
-                            printfn "compiling %s" debug
+                            //printfn "compiling %s" debug
                             _COMMA vm codeword
                             words.NEXT
             else // Not in the dictionary (not a word) so assume it's a literal number.
@@ -887,11 +890,11 @@ module Words =
                          vm.out_buffer.setString vm.errmsgnl
                          words.NEXT
                     else if vm.STATE.value = 0// Are we compiling or executing?vm.SP.push number
-                        then printfn "push number %d" number
+                        then //printfn "push number %d" number
                              vm.SP.push number// Jump if executing.
                              words.NEXT
                         else // Compiling - just append the word to the current dictionary definition.
-                            printfn "compiling LIT %d" number
+                            //printfn "compiling LIT %d" number
                             _COMMA vm LIT
                             _COMMA vm number
                             words.NEXT
@@ -905,7 +908,8 @@ module Words =
                     |]
         x.defcode "CHAR" Flags.NONE (fun vm ->
             let str = _WORD vm
-            let c = Memory.getInt vm.memory str.address
+            //printfn "read word %s" <| Memory.toString vm.memory str
+            let c = int vm.memory.[str.address]
             vm.SP.push c
             words.NEXT
         )
