@@ -326,7 +326,7 @@ module Words =
                 DOCOL = vm.DOCOL.address
                 EXIT = vm.EXIT.address
             }
-         member x.setQUIT quit = vm.QUIT.value <- quit
+        member x.setQUIT quit = vm.QUIT.value <- quit
         member x.create (name: string) (flags:Flags) =
             let nameSize = byte name.Length
             assert (nameSize <= 31uy)
@@ -600,23 +600,6 @@ module Words =
         x.defconst "F_IMMED" Flags.NONE (fun vm ->  int Flags.IMMEDIATE)
         x.defconst "F_HIDDEN" Flags.NONE (fun vm ->  int Flags.HIDDEN)
         x.defconst "F_LENMASK" Flags.NONE (fun vm -> LENMASK)
-        
-        //x.defconst "SYS_EXIT",8,,SYS_EXIT,__NR_exit
-        //x.defconst "SYS_OPEN",8,,SYS_OPEN,__NR_open
-        //x.defconst "SYS_CLOSE",9,,SYS_CLOSE,__NR_close
-        //x.defconst "SYS_READ",8,,SYS_READ,__NR_read
-        //x.defconst "SYS_WRITE",9,,SYS_WRITE,__NR_write
-        //x.defconst "SYS_CREAT",9,,SYS_CREAT,__NR_creat
-        //x.defconst "SYS_BRK",7,,SYS_BRK,__NR_brk
-        
-        //x.defconst "O_RDONLY",8,,__O_RDONLY,0
-        //x.defconst "O_WRONLY",8,,__O_WRONLY,1
-        //x.defconst "O_RDWR",6,,__O_RDWR,2
-        //x.defconst "O_CREAT",7,,__O_CREAT,0100
-        //x.defconst "O_EXCL",6,,__O_EXCL,0200
-        //x.defconst "O_TRUNC",7,,__O_TRUNC,01000
-        //x.defconst "O_APPEND",8,,__O_APPEND,02000
-        //x.defconst "O_NONBLOCK",10,,__O_NONBLOCK,04000
 
         //RETURN STACK ----------------------------------------------------------------------
         x.defcode ">R" Flags.NONE (fun vm -> 
@@ -676,7 +659,6 @@ module Words =
 
         let _WORD vm = 
             let str = readWord vm ReadMode.SKIP
-            //printfn "read word %s" <| Memory.toString vm.memory str
             str
 
         let WORD = x.defcodeRetCodeword "WORD" Flags.NONE (fun vm -> 
@@ -876,15 +858,13 @@ module Words =
             let pointer = _FIND vm word//pointer to header or 0 if not found.
             if pointer <> 0 //found word
             then
-                //let debug = Memory.toString vm.memory word
                 let nameFlags = vm.memory.[pointer + Memory.baseSize] |> int
                 let codeword = _TCFA vm pointer
                 let isImmediate = (nameFlags &&& int Flags.IMMEDIATE) <> 0
                 if isImmediate
                 then exec codeword// If IMMED, jump straight to executing.
                 else if vm.STATE.value = 0// Are we compiling or executing?
-                        then //printfn "executing %s" debug
-                             exec codeword// Jump if executing.
+                        then exec codeword// Jump if executing.
                         else // Compiling - just append the word to the current dictionary definition.
                             //printfn "compiling %s" debug
                             _COMMA vm codeword
@@ -897,11 +877,9 @@ module Words =
                          vm.out_buffer.setString vm.errmsgnl
                          words.NEXT
                     else if vm.STATE.value = 0// Are we compiling or executing?vm.SP.push number
-                        then //printfn "push number %d" number
-                             vm.SP.push number// Jump if executing.
+                        then vm.SP.push number// Jump if executing.
                              words.NEXT
                         else // Compiling - just append the word to the current dictionary definition.
-                            //printfn "compiling LIT %d" number
                             _COMMA vm LIT
                             _COMMA vm number
                             words.NEXT
