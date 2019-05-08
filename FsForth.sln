@@ -8,6 +8,7 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{A3673C3D-E3A1-485B-A7B0-D34A8279C47B}"
 	ProjectSection(SolutionItems) = preProject
 		jonesforth.f = jonesforth.f
+		jonesforth.S = jonesforth.S
 	EndProjectSection
 EndProject
 Global

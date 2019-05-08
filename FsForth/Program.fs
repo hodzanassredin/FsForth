@@ -1,4 +1,5 @@
-﻿open Forth
+﻿open Hardware
+open Forth
 
 let rec private runFn (vm:ForthVM.ForthVM) (code:ForthVM.CodeMemory) (fn : ForthVM.FnPointer)= 
     let fn = code.get fn vm

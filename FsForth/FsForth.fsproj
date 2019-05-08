@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="Hardware.fs" />
     <Compile Include="jonesforth.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
