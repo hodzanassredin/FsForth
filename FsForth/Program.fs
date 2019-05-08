@@ -8,13 +8,13 @@ let printState (vm:ForthVM.ForthVM) =
     let wordsList = ForthDebug.getWordsList vm
     let lastStr : String = List.last wordsList |> sprintf "%A"
     //Console.Write("\tLAST WORD:{0}",lastStr.Replace("\n",""))
-    if vm.SP.count()>0 then 
-        Console.Write("\tSTACK:{0}",vm.SP.ToString())
-        //Console.Write("\tLATEST:{0}",vm.LATEST.value)
-        //Console.Write("\tBASE:{0}",vm.BASE.value)
-        //Console.Write("\tSTATE:{0}",vm.STATE.value)
-        //Console.Write("\tHERE:{0}",vm.HERE.value)
-        Console.WriteLine()
+    //if vm.SP.count()>0 then 
+    //    Console.Write("\tSTACK:{0}",vm.SP.ToString())
+    //    //Console.Write("\tLATEST:{0}",vm.LATEST.value)
+    //    //Console.Write("\tBASE:{0}",vm.BASE.value)
+    //    //Console.Write("\tSTATE:{0}",vm.STATE.value)
+    //    //Console.Write("\tHERE:{0}",vm.HERE.value)
+    //    Console.WriteLine()
     ()
 
 

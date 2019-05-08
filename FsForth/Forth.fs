@@ -190,11 +190,11 @@ module ForthVM =
             nextFnPointer <- nextFnPointer + 1
             nextFnPointer - 1
     
-        let next (vm:ForthVM) = 
+        let nextF (vm:ForthVM) = 
             vm.W <- getInt vm.memory vm.IP//current codeword
             vm.IP <- vm.IP + baseSize
             getInt vm.memory vm.W//native fn address
-        let next = addFn next
+        let next = addFn nextF
         //alternative names: docolon, enter
         let docol (vm:ForthVM) = 
             vm.RSP.push vm.IP
@@ -224,7 +224,8 @@ module ForthVM =
 
         member x.addFunction = addFn
     
-        member x.get idx = nativeFuncs.[idx]
+        member x.get idx = 
+            if next = idx then nextF else nativeFuncs.[idx]
 
     and ForthVM = {
         memory : Memory
@@ -380,6 +381,11 @@ module Words =
         
     let init (x: Writer) (words:PredefinedWords) = 
         let codewords = x.setIndirectPredefinedWords ()
+
+        x.defcode "EXIT" Flags.NONE (fun vm -> 
+            words.EXIT
+        ) 
+
         x.defcode "DROP" Flags.NONE (fun vm -> 
             vm.SP.pop() |> ignore
             words.NEXT
