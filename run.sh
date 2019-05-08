@@ -1,0 +1,1 @@
+cat jonesforth.f - | dotnet run -p FsForth/FsForth.fsproj
