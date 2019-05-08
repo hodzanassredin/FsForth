@@ -701,13 +701,14 @@ Don't worry too much about the exact implementation details of this macro - it's
 *)
 module Words = 
     open ForthVM
+(* Flags - these are discussed later. *)
     [<Flags>]
     type Flags =
         | NONE = 0
         | IMMEDIATE = 0x80
         | HIDDEN = 0x20
 
-    let LENMASK = 0x1f
+    let LENMASK = 0x1f// length mask
     type ReadMode = SKIP|WORD|COMMENT//word parser modes
 
     type Writer(vm:ForthVM, code:CodeMemory) =
@@ -741,82 +742,100 @@ module Words =
             let flags = byte flags
 
             let curlink = vm.LATEST.value
-            vm.LATEST.value <- vm.HERE.value//set link
+            vm.LATEST.value <- vm.HERE.value//link
             write(curlink)
-            nameSize + flags |> writeByte
-            writeString name
-            align()
+            nameSize + flags |> writeByte// flags + length byte
+            writeString name// the name
+            align()// padding to next 4 byte boundary
 
         member x.writeCodewordPayloadRetCodeword (name: string) (flags:Flags) (codeword:FnPointer) (payload:Int32[]) = 
             x.create name flags 
             let codewordAddr = vm.HERE.value
             write codeword
+            // list of word pointers follow
             for d in payload do
                 write d 
             codewordAddr
 
         member x.defwordRetCodeword (name: string) (flags:Flags) (program:Int32[]) = 
-            x.writeCodewordPayloadRetCodeword name flags code.DirectPredefinedWords.DOCOL program
+            x.writeCodewordPayloadRetCodeword name flags code.DirectPredefinedWords.DOCOL program // codeword - the interpreter
 
         member x.defword (name: string) (flags:Flags) (program:Int32[]) = 
             x.defwordRetCodeword name flags program |>ignore
 
-        //add native word
-        member x.defcodeRetCodeword (name: string) (flags:Flags) (f:Fn) = 
+(*
+Similarly I want a way to write words written in assembly language.  There will quite a few
+of these to start with because, well, everything has to start in assembly before there's
+enough "infrastructure" to be able to start writing FORTH words, but also I want to define
+some common FORTH words in assembly language for speed, even though I could write them in FORTH.
+
+This is what DUP looks like in memory:
+
+  pointer to previous word
+   ^
+   |
++--|------+---+---+---+---+------------+
+| LINK    | 3 | D | U | P | code_DUP ---------------------> points to the assembly
++---------+---+---+---+---+------------+                    code used to write DUP,
+   ^       len              codeword                        which ends with NEXT.
+   |
+  LINK in next word
+
+Again, for brevity in writing the header I'm going to write an assembler macro called defcode.
+As with defword above, don't worry about the complicated details of the macro.
+*)
+        member x.defcode (name: string) (flags:Flags) (f:Fn) = 
             let fAddr = code.addFunction f
             x.writeCodewordPayloadRetCodeword name flags fAddr Array.empty
 
-        member x.defcode (name: string) (flags:Flags) (f:Fn) = x.defcodeRetCodeword name flags f |> ignore
-
-        member x.defconstRetCodeword (name: string) (flags:Flags) (value:ForthVM ->Int32) = 
+        member x.defconst (name: string) (flags:Flags) (value:ForthVM ->Int32) = 
             let value = value vm
             //x.writeCodewordPayloadRetCodeword name flags code.CONST [|value|]
-            x.defcodeRetCodeword name flags (fun vm -> 
+            x.defcode name flags (fun vm -> 
                 vm.SP.push value
                 code.DirectPredefinedWords.NEXT
             )
 
-        member x.defconst (name: string) (flags:Flags) (value:ForthVM ->Int32) = 
-            x.defconstRetCodeword name flags value |> ignore
         //add variable
-        member x.defvarRetCodeword (name: string) (flags:Flags) (varAddress:ForthVM -> Int32) (initial:Int32 option) = 
+        member x.defvar (name: string) (flags:Flags) (varAddress:ForthVM -> Int32) (initial:Int32 option) = 
             let varAddress = varAddress vm
             match initial with  
                 | Some(initial) -> Memory.setInt vm.memory varAddress initial
                 | _ -> ()
-            x.defconstRetCodeword name flags (fun vm -> varAddress)
-        member x.defvar (name: string) (flags:Flags) (varAddress:ForthVM -> Int32) (initial:Int32 option) = x.defvarRetCodeword name flags varAddress initial |> ignore
+            x.defconst name flags (fun vm -> varAddress)
         
         
     let init (x: Writer) (words:PredefinedWords) = 
         let codewords = x.setIndirectPredefinedWords ()
+(*
+Now some easy FORTH primitives.  These are written in assembly for speed.  If you understand
+i386 assembly language then it is worth reading these.  However if you don't understand assembly
+you can skip the details.
+*)
 
-        x.defcode "EXIT" Flags.NONE (fun vm -> 
-            words.EXIT
-        ) 
 
-        x.defcode "DROP" Flags.NONE (fun vm -> 
-            vm.SP.pop() |> ignore
+        let DROP = x.defcode "DROP" Flags.NONE (fun vm -> 
+            vm.SP.pop() |> ignore// drop top of stack
             words.NEXT
         ) 
 
-        x.defcode "SWAP" Flags.NONE (fun vm -> 
-            let x = vm.SP.pop()
+        let SWAP = x.defcode "SWAP" Flags.NONE (fun vm -> 
+            let x = vm.SP.pop()// swap top two elements on stack
             let y = vm.SP.pop()
             vm.SP.push(x)
             vm.SP.push(y)
             words.NEXT
         ) 
-        x.defcode "DUP" Flags.NONE (fun vm -> 
+        let DUP = x.defcode "DUP" Flags.NONE (fun vm -> 
             vm.SP.push(vm.SP.peek 0)// duplicate top of stack
             words.NEXT
         ) 
-        x.defcode "OVER" Flags.NONE (fun vm -> 
+        let OVER = x.defcode "OVER" Flags.NONE (fun vm -> 
             vm.SP.push(vm.SP.peek 1)//get the second element of stack and push it on top
             words.NEXT
         ) 
         //( a b c -- b c a )
-        x.defcode "ROT" Flags.NONE (fun vm -> 
+        let ROT = x.defcode "ROT" Flags.NONE (fun vm -> 
             let eax = vm.SP.pop()
             let ebx = vm.SP.pop()
             let ecx = vm.SP.pop()
@@ -826,7 +845,7 @@ module Words =
             words.NEXT 
         ) 
         //( a b c -- c a b ) rot rot 
-        x.defcode "-ROT" Flags.NONE (fun vm -> 
+        let NROT = x.defcode "-ROT" Flags.NONE (fun vm -> 
             let eax = vm.SP.pop()
             let ebx = vm.SP.pop()
             let ecx = vm.SP.pop()
@@ -836,13 +855,13 @@ module Words =
             words.NEXT 
         ) 
         //( a b -- ) drop drop ;
-        x.defcode "2DROP" Flags.NONE (fun vm ->  // drop top two elements of stack
+        let TWODROP = x.defcode "2DROP" Flags.NONE (fun vm ->  // drop top two elements of stack
             vm.SP.pop () |> ignore
             vm.SP.pop () |> ignore
             words.NEXT 
         ) 
         //( a b -- a b a b ) over over ;
-        x.defcode "2DUP" Flags.NONE (fun vm ->  // duplicate top two elements of stack
+        let TWODUP = x.defcode "2DUP" Flags.NONE (fun vm ->  // duplicate top two elements of stack
             let b = vm.SP.peek 0
             let a = vm.SP.peek 1
             vm.SP.push a
@@ -850,7 +869,7 @@ module Words =
             words.NEXT 
         ) 
         //( d1 d2 — d2 d1 )
-        x.defcode "2SWAP" Flags.NONE (fun vm ->  // swap top two pairs of elements of stack
+        let TWOSWAP = x.defcode "2SWAP" Flags.NONE (fun vm ->  // swap top two pairs of elements of stack
             let eax = vm.SP.pop ()
             let ebx = vm.SP.pop ()
             let ecx = vm.SP.pop ()
@@ -876,7 +895,7 @@ module Words =
 
         //( a -- a a | 0 ) dup if dup then 
         //Duplicate x if it is non-zero. 
-        x.defcode "?DUP" Flags.NONE (fun vm -> // duplicate top of stack if non-zero
+        let QDUP = x.defcode "?DUP" Flags.NONE (fun vm -> // duplicate top of stack if non-zero
             let eax = vm.SP.peek 0
             if eax <> 0 then vm.SP.push eax
             words.NEXT 
@@ -884,16 +903,20 @@ module Words =
 
         let flip f a b = f b a 
 
-        def apply "1+" <| (+) 1
-        def apply "1-" <| flip (-) 1
-        def apply "4+" <| (+) 4
-        def apply "4-" <| flip (-) 4
-        def apply2 "+" <| (+)
-        def apply2 "-" <| flip (-)
-        def apply2 "*" <| (*)
-    
+        let INCR = def apply "1+" <| (+) 1// increment top of stack
+        let DECR = def apply "1-" <| flip (-) 1// decrement top of stack
+        let INCR4 = def apply "4+" <| (+) 4// add 4 to top of stack
+        let DECR4 = def apply "4-" <| flip (-) 4// subtract 4 from top of stack
+        let ADD = def apply2 "+" <| (+)// get top of stack and add it to next word on stack
+        let SUB = def apply2 "-" <| flip (-)// get top of stack and subtract it from next word on stack
+        let MUL = def apply2 "*" <| (*)
+(*
+In this FORTH, only /MOD is primitive.  Later we will define the / and MOD words in
+terms of the primitive /MOD.  The design of the i386 assembly instruction idiv which
+leaves both quotient and remainder makes this the obvious choice.
+*)
         //( n1 n2 -- n3 n4 ) Divide n1 by n2, giving the single-cell remainder n3 and the single-cell quotient n4
-        x.defcode "/MOD" Flags.NONE (fun vm -> 
+        let DIVMOD = x.defcode "/MOD" Flags.NONE (fun vm -> 
             let divisor = vm.SP.pop()
             let dividend = vm.SP.pop()
             let quotient, remainder = Math.DivRem(dividend, divisor)
@@ -902,74 +925,157 @@ module Words =
             words.NEXT 
         ) 
 
-        ////Lots of comparison operations like =, <, >, etc..
-        ////ANS FORTH says that the comparison words should return all (binary) 1's for
-        ////TRUE and all 0's for FALSE.  
+(*
+Lots of comparison operations like =, <, >, etc..
+
+ANS FORTH says that the comparison words should return all (binary) 1's for
+TRUE and all 0's for FALSE.  However this is a bit of a strange convention
+so this FORTH breaks it and returns the more normal (for C programmers ...)
+1 meaning TRUE and 0 meaning FALSE.
+*)
 
         //n1 n2 – f  
-        def applyBool2 "=" (=)
-        def applyBool2 "<>" (<>)
-        def applyBool2 "<" <| flip (<)
-        def applyBool2 ">" <| flip (>)
-        def applyBool2 "<=" <| flip (<=)
-        def applyBool2 ">=" <| flip (>=)
-        def applyBool2 ">" <| flip (>)
+        let EQU = def applyBool2 "=" (=)// top two words are equal?
+        let NEQU = def applyBool2 "<>" (<>)// top two words are not equal?
+        let LT = def applyBool2 "<" <| flip (<)
+        let GT = def applyBool2 ">" <| flip (>)
+        let LE = def applyBool2 "<=" <| flip (<=)
+        let GE = def applyBool2 ">=" <| flip (>=)
+        //def applyBool2 ">" <| flip (>)
     
-        def applyBool "0=" <| flip (=) 0
-        def applyBool "0<>" <| flip (<>) 0
-        def applyBool "0<" <| flip (<) 0
-        def applyBool "0>" <| flip (>) 0
-        def applyBool "0<=" <| flip (<=) 0
-        def applyBool "0>=" <| flip (>=) 0
-        //bitwise
-        def apply2 "AND" (&&&) 
-        def apply2 "OR" (|||) 
-        def apply2 "XOR" (^^^) 
-        def apply "INVERT" (~~~) 
-    
-        let LIT = x.defcodeRetCodeword "LIT" Flags.NONE (fun vm ->
-            vm.W <- Memory.getInt vm.memory vm.IP//current codeword
+        let ZEQU = def applyBool "0=" <| flip (=) 0// top of stack equals 0?
+        let ZNEQU = def applyBool "0<>" <| flip (<>) 0// top of stack not 0?
+        let ZLT = def applyBool "0<" <| flip (<) 0// comparisons with 0
+        let ZGT = def applyBool "0>" <| flip (>) 0
+        let ZLE = def applyBool "0<=" <| flip (<=) 0
+        let ZGE = def applyBool "0>=" <| flip (>=) 0
+        
+        let AND = def apply2 "AND" (&&&) // bitwise AND
+        let OR = def apply2 "OR" (|||) // bitwise OR
+        let XOR = def apply2 "XOR" (^^^) // bitwise XOR
+        let INVERT = def apply "INVERT" (~~~) // this is the FORTH bitwise "NOT" function (cf. NEGATE and NOT)
+
+(*
+        RETURNING FROM FORTH WORDS ----------------------------------------------------------------------
+
+        Time to talk about what happens when we EXIT a function.  In this diagram QUADRUPLE has called
+        DOUBLE, and DOUBLE is about to exit (look at where %esi is pointing):
+
+                QUADRUPLE
+                +------------------+
+                | codeword         |
+                +------------------+               DOUBLE
+                | addr of DOUBLE  ---------------> +------------------+
+                +------------------+               | codeword         |
+                | addr of DOUBLE   |               +------------------+
+                +------------------+               | addr of DUP      |
+                | addr of EXIT     |               +------------------+
+                +------------------+               | addr of +        |
+                                                   +------------------+
+                                           %esi -> | addr of EXIT     |
+                                                   +------------------+
+
+        What happens when the + function does NEXT?  Well, the following code is executed.
+*)
+        let EXIT = x.defcode "EXIT" Flags.NONE (fun vm -> 
+            words.EXIT
+        ) 
+
+(*
+        EXIT gets the old %esi which we saved from before on the return stack, and puts it in %esi.
+        So after this (but just before NEXT) we get:
+
+                QUADRUPLE
+                +------------------+
+                | codeword         |
+                +------------------+               DOUBLE
+                | addr of DOUBLE  ---------------> +------------------+
+                +------------------+               | codeword         |
+        %esi -> | addr of DOUBLE   |               +------------------+
+                +------------------+               | addr of DUP      |
+                | addr of EXIT     |               +------------------+
+                +------------------+               | addr of +        |
+                                                   +------------------+
+                                                   | addr of EXIT     |
+                                                   +------------------+
+
+        And NEXT just completes the job by, well, in this case just by calling DOUBLE again :-)
+
+        LITERALS ----------------------------------------------------------------------
+
+        The final point I "glossed over" before was how to deal with functions that do anything
+        apart from calling other functions.  For example, suppose that DOUBLE was defined like this:
+
+        : DOUBLE 2 * ;
+
+        It does the same thing, but how do we compile it since it contains the literal 2?  One way
+        would be to have a function called "2" (which you'd have to write in assembler), but you'd need
+        a function for every single literal that you wanted to use.
+
+        FORTH solves this by compiling the function using a special word called LIT:
+
+        +---------------------------+-------+-------+-------+-------+-------+
+        | (usual header of DOUBLE)  | DOCOL | LIT   | 2     | *     | EXIT  |
+        +---------------------------+-------+-------+-------+-------+-------+
+
+        LIT is executed in the normal way, but what it does next is definitely not normal.  It
+        looks at %esi (which now points to the number 2), grabs it, pushes it on the stack, then
+        manipulates %esi in order to skip the number as if it had never been there.
+
+        What's neat is that the whole grab/manipulate can be done using a single byte single
+        i386 instruction, our old friend LODSL.  Rather than me drawing more ASCII-art diagrams,
+        see if you can find out how LIT works:
+*)
+        let LIT = x.defcode "LIT" Flags.NONE (fun vm ->
+            vm.W <- Memory.getInt vm.memory vm.IP//current literal
             vm.IP <- vm.IP + Memory.baseSize
-            //let l = Memory.getInt vm.memory vm.W
-            vm.SP.push vm.W//todo fix
+            vm.SP.push vm.W// push the literal number on to stack
             words.NEXT
         )
-        x.defcode "!" Flags.NONE (fun vm -> 
+(*
+MEMORY ----------------------------------------------------------------------
+
+As important point about FORTH is that it gives you direct access to the lowest levels
+of the machine.  Manipulating memory directly is done frequently in FORTH, and these are
+the primitive words for doing it.
+*)
+        let STORE = x.defcode "!" Flags.NONE (fun vm -> 
             let address = vm.SP.pop()
             let data = vm.SP.pop()
             Memory.setInt vm.memory address data
             words.NEXT 
         )
-        let FETCH = x.defcodeRetCodeword "@" Flags.NONE (fun vm -> 
+        let FETCH = x.defcode "@" Flags.NONE (fun vm -> 
             let address = vm.SP.pop()
             let data = Memory.getInt vm.memory address 
             vm.SP.push data
             words.NEXT 
         )
-        x.defcode "+!" Flags.NONE (fun vm -> 
+        let ADDSTORE = x.defcode "+!" Flags.NONE (fun vm -> 
             let address = vm.SP.pop()
-            let amount = vm.SP.pop()
-            Memory.setInt vm.memory address (Memory.getInt vm.memory address + amount)
+            let amount = vm.SP.pop()// the amount to add
+            Memory.setInt vm.memory address (Memory.getInt vm.memory address + amount)// add it
             words.NEXT 
         )
-        x.defcode "-!" Flags.NONE (fun vm -> 
+        let SUBSTORE = x.defcode "-!" Flags.NONE (fun vm -> 
             let address = vm.SP.pop()
-            let amount = vm.SP.pop()
+            let amount = vm.SP.pop()// the amount to subtract
             Memory.setInt vm.memory address (Memory.getInt vm.memory address - amount)
             words.NEXT 
         )
+(*
+! and @ (STORE and FETCH) store 32-bit words.  It's also useful to be able to read and write bytes
+so we also define standard words C@ and C!.
 
-        //! and @ (STORE and FETCH) store 32-bit words.  It's also useful to be able to read and write bytes
-        //so we also define standard words C@ and C!.
-        //Byte-oriented operations only work on architectures which permit them (i386 is one of those).
-
-        x.defcode "C!" Flags.NONE (fun vm -> 
+Byte-oriented operations only work on architectures which permit them (i386 is one of those).
+ *)
+        let STOREBYTE = x.defcode "C!" Flags.NONE (fun vm -> 
             let address = vm.SP.pop()
             let data = vm.SP.pop()
             vm.memory.[address] <- byte data
             words.NEXT 
         )
-        x.defcode "C@" Flags.NONE (fun vm -> 
+        let FETCHBYTE = x.defcode "C@" Flags.NONE (fun vm -> 
             let address = vm.SP.pop()
             let data = int vm.memory.[address]
             vm.SP.push <| data
@@ -977,17 +1083,17 @@ module Words =
         )
 
         // C@C! is a useful byte copy primitive. 
-        x.defcode "C@C!" Flags.NONE (fun vm -> 
+        let CCOPY = x.defcode "C@C!" Flags.NONE (fun vm -> 
             let destination = vm.SP.pop()
             let source = vm.SP.pop()
-            vm.memory.[destination] <- vm.memory.[source]
+            vm.memory.[destination] <- vm.memory.[source]// get source character copy to destination
             vm.SP.push (source + 1)// increment source address
             vm.SP.push (destination + 1)// increment destination address
             words.NEXT
         )
 
         // and CMOVE is a block copy operation. 
-        x.defcode "CMOVE" Flags.NONE (fun vm -> 
+        let CMOVE = x.defcode "CMOVE" Flags.NONE (fun vm -> 
             let length = vm.SP.pop()
             let destination = vm.SP.pop()
             let source = vm.SP.pop()
@@ -996,64 +1102,179 @@ module Words =
             words.NEXT 
         )
 
-        x.defvar "STATE" Flags.NONE (fun vm -> vm.STATE.address) Option.None
-        x.defvar "HERE" Flags.NONE (fun vm -> vm.HERE.address) Option.None
-        let LATEST = x.defvarRetCodeword "LATEST" Flags.NONE (fun vm -> vm.LATEST.address) Option.None //name_SYSCALL0 // SYSCALL0 must be last in built-in dictionary
-        x.defvar "BASE" Flags.NONE (fun vm -> vm.BASE.address) Option.None
-        
-        x.defconst "S0" Flags.NONE (fun vm -> vm.SP.S0)
-        x.defconst "VERSION" Flags.NONE (fun vm -> JONES_VERSION)
-        let RZ = x.defconstRetCodeword "R0" Flags.NONE (fun vm -> vm.RSP.S0)
-        x.defconst "DOCOL" Flags.NONE (fun vm -> words.DOCOL)//probaly words -> codewords
-        x.defconst "F_IMMED" Flags.NONE (fun vm ->  int Flags.IMMEDIATE)
-        x.defconst "F_HIDDEN" Flags.NONE (fun vm ->  int Flags.HIDDEN)
-        x.defconst "F_LENMASK" Flags.NONE (fun vm -> LENMASK)
+(*
+        BUILT-IN VARIABLES ----------------------------------------------------------------------
 
-        //RETURN STACK ----------------------------------------------------------------------
-        x.defcode ">R" Flags.NONE (fun vm -> 
+        These are some built-in variables and related standard FORTH words.  Of these, the only one that we
+        have discussed so far was LATEST, which points to the last (most recently defined) word in the
+        FORTH dictionary.  LATEST is also a FORTH word which pushes the address of LATEST (the variable)
+        on to the stack, so you can read or write it using @ and ! operators.  For example, to print
+        the current value of LATEST (and this can apply to any FORTH variable) you would do:
+
+        LATEST @ . CR
+
+        To make defining variables shorter, I'm using a macro called defvar, similar to defword and
+        defcode above.  (In fact the defvar macro uses defcode to do the dictionary header).
+*)
+(*
+The built-in variables are:
+
+STATE           Is the interpreter executing code (0) or compiling a word (non-zero)?
+LATEST          Points to the latest (most recently defined) word in the dictionary.
+HERE            Points to the next free byte of memory.  When compiling, compiled words go here.
+
+BASE            The current base for printing and reading numbers.
+
+*)
+      
+        let STATE = x.defvar "STATE" Flags.NONE (fun vm -> vm.STATE.address) Option.None
+        let HERE = x.defvar "HERE" Flags.NONE (fun vm -> vm.HERE.address) Option.None
+        let LATEST = x.defvar "LATEST" Flags.NONE (fun vm -> vm.LATEST.address) Option.None //name_SYSCALL0 // SYSCALL0 must be last in built-in dictionary
+        let BASE = x.defvar "BASE" Flags.NONE (fun vm -> vm.BASE.address) Option.None
+(*
+BUILT-IN CONSTANTS ----------------------------------------------------------------------
+
+It's also useful to expose a few constants to FORTH.  When the word is executed it pushes a
+constant value on the stack.
+
+The built-in constants are:
+
+VERSION         Is the current version of this FORTH.
+S0              Stores the address of the top of the parameter stack.
+R0              The address of the top of the return stack.
+DOCOL           Pointer to DOCOL.
+F_IMMED         The IMMEDIATE flag's actual value.
+F_HIDDEN        The HIDDEN flag's actual value.
+F_LENMASK       The length mask in the flags/len byte.
+*)
+        let SZ = x.defconst "S0" Flags.NONE (fun vm -> vm.SP.S0)
+        let VERSION = x.defconst "VERSION" Flags.NONE (fun vm -> JONES_VERSION)
+        let RZ = x.defconst "R0" Flags.NONE (fun vm -> vm.RSP.S0)
+        let __DOCOL = x.defconst "DOCOL" Flags.NONE (fun vm -> words.DOCOL)//probaly words -> codewords
+        let __F_IMMED = x.defconst "F_IMMED" Flags.NONE (fun vm ->  int Flags.IMMEDIATE)
+        let __F_HIDDEN = x.defconst "F_HIDDEN" Flags.NONE (fun vm ->  int Flags.HIDDEN)
+        let __F_LENMASK = x.defconst "F_LENMASK" Flags.NONE (fun vm -> LENMASK)
+(*
+RETURN STACK ----------------------------------------------------------------------
+
+These words allow you to access the return stack.  Recall that the register %ebp always points to
+the top of the return stack.
+*)
+        let TOR = x.defcode ">R" Flags.NONE (fun vm -> 
             vm.SP.pop() |> vm.RSP.push
             words.NEXT 
         )
-        x.defcode "R>" Flags.NONE (fun vm -> 
+        let FROMR = x.defcode "R>" Flags.NONE (fun vm -> 
             vm.RSP.pop() |> vm.SP.push
             words.NEXT 
         )
         //get return stack pointer
-        x.defcode "RSP@" Flags.NONE (fun vm -> 
+        let RSPFETCH = x.defcode "RSP@" Flags.NONE (fun vm -> 
             vm.SP.push vm.RSP.top
             words.NEXT 
         )
         //set return stack pointer
-        let RSPSTORE = x.defcodeRetCodeword "RSP!" Flags.NONE (fun vm -> 
+        let RSPSTORE = x.defcode "RSP!" Flags.NONE (fun vm -> 
             vm.RSP.top <- vm.SP.pop()
             words.NEXT 
         )
-        x.defcode "RDROP" Flags.NONE (fun vm -> 
-            vm.RSP.pop()|> ignore
+        let RDROP = x.defcode "RDROP" Flags.NONE (fun vm -> 
+            vm.RSP.pop()|> ignore// pop return stack and throw away
             words.NEXT 
         )
-        //PARAMETER (DATA) STACK ----------------------------------------------------------------------
-        //get data stack pointer
-        x.defcode "DSP@" Flags.NONE (fun vm -> 
+(*
+PARAMETER (DATA) STACK ----------------------------------------------------------------------
+
+These functions allow you to manipulate the parameter stack.  Recall that Linux sets up the parameter
+stack for us, and it is accessed through %esp.
+*)
+        let DSPFETCH = x.defcode "DSP@" Flags.NONE (fun vm -> 
             vm.SP.push vm.SP.top
             words.NEXT 
         )
         //set data stack pointer
-        x.defcode "DSP!" Flags.NONE (fun vm -> 
+        let DSPSTORE = x.defcode "DSP!" Flags.NONE (fun vm -> 
             vm.SP.top <- vm.SP.pop()
             words.NEXT 
         )
+(*
+INPUT AND OUTPUT ----------------------------------------------------------------------
 
-        //io
-        x.defcode "KEY" Flags.NONE (fun vm -> 
-            vm.input_buffer.get() |> int |> vm.SP.push
+These are our first really meaty/complicated FORTH primitives.  I have chosen to write them in
+assembler, but surprisingly in "real" FORTH implementations these are often written in terms
+of more fundamental FORTH primitives.  I chose to avoid that because I think that just obscures
+the implementation.  After all, you may not understand assembler but you can just think of it
+as an opaque block of code that does what it says.
+
+Let's discuss input first.
+
+The FORTH word KEY reads the next byte from stdin (and pushes it on the parameter stack).
+So if KEY is called and someone hits the space key, then the number 32 (ASCII code of space)
+is pushed on the stack.
+
+In FORTH there is no distinction between reading code and reading input.  We might be reading
+and compiling code, we might be reading words to execute, we might be asking for the user
+to type their name -- ultimately it all comes in through KEY.
+
+The implementation of KEY uses an input buffer of a certain size (defined at the end of this
+file).  It calls the Linux read(2) system call to fill this buffer and tracks its position
+in the buffer using a couple of variables, and if it runs out of input buffer then it refills
+it automatically.  The other thing that KEY does is if it detects that stdin has closed, it
+exits the program, which is why when you hit ^D the FORTH system cleanly exits.
+
+     buffer                           bufftop
+|                                |
+V                                V
++-------------------------------+--------------------------------------+
+| INPUT READ FROM STDIN ....... | unused part of the buffer            |
++-------------------------------+--------------------------------------+
+                  ^
+                  |
+               currkey (next character to read)
+
+<---------------------- BUFFER_SIZE (4096 bytes) ---------------------->
+*)
+        let KEY = x.defcode "KEY" Flags.NONE (fun vm -> 
+            vm.input_buffer.get() |> int |> vm.SP.push// push return value on stack
             words.NEXT 
         )
-        x.defcode "EMIT" Flags.NONE (fun vm -> 
+(*
+By contrast, output is much simpler.  The FORTH word EMIT writes out a single byte to stdout.
+This implementation just uses the write system call.  No attempt is made to buffer output, but
+it would be a good exercise to add it.
+*)
+        let EMIT = x.defcode "EMIT" Flags.NONE (fun vm -> 
             vm.SP.pop() |> byte |> vm.out_buffer.set
             words.NEXT 
         )
-         
+(*
+Back to input, WORD is a FORTH word which reads the next full word of input.
+
+What it does in detail is that it first skips any blanks (spaces, tabs, newlines and so on).
+Then it calls KEY to read characters into an internal buffer until it hits a blank.  Then it
+calculates the length of the word it read and returns the address and the length as
+two words on the stack (with the length at the top of stack).
+
+Notice that WORD has a single internal buffer which it overwrites each time (rather like
+a static C string).  Also notice that WORD's internal buffer is just 32 bytes long and
+there is NO checking for overflow.  31 bytes happens to be the maximum length of a
+FORTH word that we support, and that is what WORD is used for: to read FORTH words when
+we are compiling and executing code.  The returned strings are not NUL-terminated.
+
+Start address+length is the normal way to represent strings in FORTH (not ending in an
+ASCII NUL character as in C), and so FORTH strings can contain any character including NULs
+and can be any length.
+
+WORD is not suitable for just reading strings (eg. user input) because of all the above
+peculiarities and limitations.
+
+Note that when executing, you'll see:
+WORD FOO
+which puts "FOO" and length 3 on the stack, but when compiling:
+: BAR WORD FOO ;
+is an error (or at least it doesn't do what you might expect).  Later we'll talk about compiling
+and immediate mode, and you'll understand why.
+*)
         let rec readWord vm mode : Memory.Span =
             let c = vm.input_buffer.get() 
             match (char c,mode) with
@@ -1069,13 +1290,28 @@ module Words =
             let str = readWord vm ReadMode.SKIP
             str
 
-        let WORD = x.defcodeRetCodeword "WORD" Flags.NONE (fun vm -> 
+        let WORD = x.defcode "WORD" Flags.NONE (fun vm -> 
             let str = _WORD vm
-            vm.SP.push str.address
-            vm.SP.push str.size
+            vm.SP.push str.address// push base address
+            vm.SP.push str.size// push length
             words.NEXT 
         )
+(*
+As well as reading in words we'll need to read in numbers and for that we are using a function
+called NUMBER.  This parses a numeric string such as one returned by WORD and pushes the
+number on the parameter stack.
 
+The function uses the variable BASE as the base (radix) for conversion, so for example if
+BASE is 2 then we expect a binary number.  Normally BASE is 10.
+
+If the word starts with a '-' character then the returned value is negative.
+
+If the string can't be parsed as a number (or contains characters outside the current BASE)
+then we need to return an error indication.  So NUMBER actually returns two items on the stack.
+At the top of stack we return the number of unconverted characters (ie. if 0 then all characters
+were converted, so there is no error).  Second from top of stack is the parsed number or a
+partial value if there was an error.
+*)
         let _NUMBER vm (str:Memory.Span) = 
             let radix = vm.BASE.value
             let mutable n = 0
@@ -1084,21 +1320,23 @@ module Words =
             let current() = int vm.memory.[str.address + idx]
 
             let mutable c = current ()
-            let isNegative = '-' = char c
+            let isNegative = '-' = char c // negative number?
             if isNegative then idx <- 1
             let mutable cnt = true
+            // Loop reading digits.
             while cnt && idx < str.size do
                 n <- n * radix
+                // Convert 0-9, A-Z to a number 0-35.
                 let d = current() - (int '0')
-                if d > radix || d < 0 then cnt <- false
+                if d > radix || d < 0 then cnt <- false// >= BASE?
                 else n <- n + d
                      idx <- idx + 1
             
             let count = if str.size = 0 then 0 else str.size - idx
 
-            if isNegative then -n, count else n, count
+            if isNegative then -n, count else n, count// Negate the result if first character was '-' 
 
-        x.defcode "NUMBER" Flags.NONE (fun vm -> 
+        let NUMBER= x.defcode "NUMBER" Flags.NONE (fun vm -> 
             let len, addr = vm.SP.pop(), vm.SP.pop()
             let number, numberOfUnparsedChars = _NUMBER vm {address = addr ; size = len}
             vm.SP.push number
@@ -1106,28 +1344,57 @@ module Words =
             words.NEXT 
         )
 
+
+(*
+        DICTIONARY LOOK UPS ----------------------------------------------------------------------
+
+        We're building up to our prelude on how FORTH code is compiled, but first we need yet more infrastructure.
+
+        The FORTH word FIND takes a string (a word as parsed by WORD -- see above) and looks it up in the
+        dictionary.  What it actually returns is the address of the dictionary header, if it finds it,
+        or 0 if it didn't.
+
+        So if DOUBLE is defined in the dictionary, then WORD DOUBLE FIND returns the following pointer:
+
+    pointer to this
+        |
+        |
+        V
+        +---------+---+---+---+---+---+---+---+---+------------+------------+------------+------------+
+        | LINK    | 6 | D | O | U | B | L | E | 0 | DOCOL      | DUP        | +          | EXIT       |
+        +---------+---+---+---+---+---+---+---+---+------------+------------+------------+------------+
+
+        See also >CFA and >DFA.
+
+        FIND doesn't find dictionary entries which are flagged as HIDDEN.  See below for why.
+*)
         let rec eqStrings (vm:ForthVM) address address2 length = 
             if length = 0 
             then true
             else if vm.memory.[address] = vm.memory.[address2]
                     then eqStrings vm (address+1) (address2+1) (length - 1)
                     else false
-
+        
         let _FIND vm (str:Memory.Span) = 
+            // Now we start searching backwards through the dictionary for this word.
+            // LATEST points to name header of the latest word in the dictionary
             let mutable wordAddr = vm.LATEST.value
             let mutable cnt = true
             while cnt do
                 if wordAddr = 0 
-                then cnt <- false
+                then cnt <- false// NULL pointer?  (end of the linked list)
                 else let flagsLen = vm.memory.[wordAddr + Memory.baseSize] |> int
                      let flagsLen = (int Flags.HIDDEN ||| LENMASK) &&& flagsLen
+                     // Compare the length expected and the length of the word.
+                     // Note that if the F_HIDDEN flag is set on the word, then by a bit of trickery
+                     // this won't pick the word (the length will appear to be wrong).
                      if flagsLen = str.size && eqStrings vm str.address (wordAddr + Memory.baseSize + 1) str.size
-                     then cnt <- false
-                     else wordAddr <- Memory.getInt vm.memory wordAddr
+                     then cnt <- false// The strings are the same - return the header pointer
+                     else wordAddr <- Memory.getInt vm.memory wordAddr// Move back through the link field to the previous word
             wordAddr
                      
 
-        let FIND = x.defcodeRetCodeword "FIND" Flags.NONE (fun vm -> 
+        let FIND = x.defcode "FIND" Flags.NONE (fun vm -> 
             let length = vm.SP.pop()
             let address = vm.SP.pop()
             let addrOfDictEntry = _FIND vm {address = address; size = length }
@@ -1136,57 +1403,328 @@ module Words =
         )
 
 
+(*
+        FIND returns the dictionary pointer, but when compiling we need the codeword pointer (recall
+        that FORTH definitions are compiled into lists of codeword pointers).  The standard FORTH
+        word >CFA turns a dictionary pointer into a codeword pointer.
+
+        The example below shows the result of:
+
+                WORD DOUBLE FIND >CFA
+
+        FIND returns a pointer to this
+        |                               >CFA converts it to a pointer to this
+        |                                          |
+        V                                          V
+        +---------+---+---+---+---+---+---+---+---+------------+------------+------------+------------+
+        | LINK    | 6 | D | O | U | B | L | E | 0 | DOCOL      | DUP        | +          | EXIT       |
+        +---------+---+---+---+---+---+---+---+---+------------+------------+------------+------------+
+                                                   codeword
+
+        Notes:
+
+        Because names vary in length, this isn't just a simple increment.
+
+        In this FORTH you cannot easily turn a codeword pointer back into a dictionary entry pointer, but
+        that is not true in most FORTH implementations where they store a back pointer in the definition
+        (with an obvious memory/complexity cost).  The reason they do this is that it is useful to be
+        able to go backwards (codeword -> dictionary entry) in order to decompile FORTH definitions
+        quickly.
+
+        What does CFA stand for?  My best guess is "Code Field Address".
+*)
+
         let _TCFA (vm:ForthVM) linkAddress = 
-            let flagsLenAddress = linkAddress + Memory.baseSize
-            let length = vm.memory.[flagsLenAddress] |> int &&& LENMASK
-            let cfaAddress = flagsLenAddress + 1 + length |> Memory.pad
+            let flagsLenAddress = linkAddress + Memory.baseSize// Skip link pointer.
+            let length = vm.memory.[flagsLenAddress] |> int &&& LENMASK// Just the length, not the flags.
+            let cfaAddress = flagsLenAddress + 1 + length |> Memory.pad// Skip the name. The codeword is 4-byte aligned.
             cfaAddress
 
-        x.defcode ">CFA" Flags.NONE (fun vm -> 
+        let TCFA = x.defcode ">CFA" Flags.NONE (fun vm -> 
             let worAddress = vm.SP.pop()
             let cfaAddress = _TCFA vm worAddress
             vm.SP.push cfaAddress
             words.NEXT 
         )
-        x.defcode ">DFA" Flags.NONE (fun vm -> 
+
+(*
+        Related to >CFA is >DFA which takes a dictionary entry address as returned by FIND and
+        returns a pointer to the first data field.
+
+        FIND returns a pointer to this
+        |                               >CFA converts it to a pointer to this
+        |                                          |
+        |                                          |    >DFA converts it to a pointer to this
+        |                                          |             |
+        V                                          V             V
+        +---------+---+---+---+---+---+---+---+---+------------+------------+------------+------------+
+        | LINK    | 6 | D | O | U | B | L | E | 0 | DOCOL      | DUP        | +          | EXIT       |
+        +---------+---+---+---+---+---+---+---+---+------------+------------+------------+------------+
+                                                   codeword
+
+        (Note to those following the source of FIG-FORTH / ciforth: My >DFA definition is
+        different from theirs, because they have an extra indirection).
+
+        You can see that >DFA is easily defined in FORTH just by adding 4 to the result of >CFA.
+*)
+        let TDFA = x.defcode ">DFA" Flags.NONE (fun vm -> 
             let worAddress = vm.SP.pop()
-            let cfaAddress = _TCFA vm worAddress
-            vm.SP.push (cfaAddress + Memory.baseSize)
-            words.NEXT 
+            let cfaAddress = _TCFA vm worAddress// >CFA         (get code field address)
+            vm.SP.push (cfaAddress + Memory.baseSize)// 4+ (add 4 to it to get to next word)
+            words.NEXT // EXIT         (return from FORTH word)
         )
+
+(*
+        COMPILING ----------------------------------------------------------------------
+
+        Now we'll talk about how FORTH compiles words.  Recall that a word definition looks like this:
+
+                : DOUBLE DUP + ;
+
+        and we have to turn this into:
+
+          pointer to previous word
+           ^
+           |
+        +--|------+---+---+---+---+---+---+---+---+------------+------------+------------+------------+
+        | LINK    | 6 | D | O | U | B | L | E | 0 | DOCOL      | DUP        | +          | EXIT       |
+        +---------+---+---+---+---+---+---+---+---+------------+--|---------+------------+------------+
+           ^       len                         pad  codeword      |
+           |                                                      V
+          LATEST points here                            points to codeword of DUP
+
+        There are several problems to solve.  Where to put the new word?  How do we read words?  How
+        do we define the words : (COLON) and ; (SEMICOLON)?
+
+        FORTH solves this rather elegantly and as you might expect in a very low-level way which
+        allows you to change how the compiler works on your own code.
+
+        FORTH has an INTERPRET function (a true interpreter this time, not DOCOL) which runs in a
+        loop, reading words (using WORD), looking them up (using FIND), turning them into codeword
+        pointers (using >CFA) and deciding what to do with them.
+
+        What it does depends on the mode of the interpreter (in variable STATE).
+
+        When STATE is zero, the interpreter just runs each word as it looks them up.  This is known as
+        immediate mode.
+
+        The interesting stuff happens when STATE is non-zero -- compiling mode.  In this mode the
+        interpreter appends the codeword pointer to user memory (the HERE variable points to the next
+        free byte of user memory -- see DATA SEGMENT section below).
+
+        So you may be able to see how we could define : (COLON).  The general plan is:
+
+        (1) Use WORD to read the name of the function being defined.
+
+        (2) Construct the dictionary entry -- just the header part -- in user memory:
+
+    pointer to previous word (from LATEST)                      +-- Afterwards, HERE points here, where
+           ^                                                    |   the interpreter will start appending
+           |                                                    V   codewords.
+        +--|------+---+---+---+---+---+---+---+---+------------+
+        | LINK    | 6 | D | O | U | B | L | E | 0 | DOCOL      |
+        +---------+---+---+---+---+---+---+---+---+------------+
+                   len                         pad  codeword
+
+        (3) Set LATEST to point to the newly defined word, ...
+
+        (4) .. and most importantly leave HERE pointing just after the new codeword.  This is where
+            the interpreter will append codewords.
+
+        (5) Set STATE to 1.  This goes into compile mode so the interpreter starts appending codewords to
+            our partially-formed header.
+
+        After : has run, our input is here:
+
+        : DOUBLE DUP + ;
+                 ^
+                 |
+                Next byte returned by KEY will be the 'D' character of DUP
+
+        so the interpreter (now it's in compile mode, so I guess it's really the compiler) reads "DUP",
+        looks it up in the dictionary, gets its codeword pointer, and appends it:
+
+                                                                             +-- HERE updated to point here.
+                                                                             |
+                                                                             V
+        +---------+---+---+---+---+---+---+---+---+------------+------------+
+        | LINK    | 6 | D | O | U | B | L | E | 0 | DOCOL      | DUP        |
+        +---------+---+---+---+---+---+---+---+---+------------+------------+
+                   len                         pad  codeword
+
+        Next we read +, get the codeword pointer, and append it:
+
+                                                                                          +-- HERE updated to point here.
+                                                                                          |
+                                                                                          V
+        +---------+---+---+---+---+---+---+---+---+------------+------------+------------+
+        | LINK    | 6 | D | O | U | B | L | E | 0 | DOCOL      | DUP        | +          |
+        +---------+---+---+---+---+---+---+---+---+------------+------------+------------+
+                   len                         pad  codeword
+
+        The issue is what happens next.  Obviously what we _don't_ want to happen is that we
+        read ";" and compile it and go on compiling everything afterwards.
+
+        At this point, FORTH uses a trick.  Remember the length byte in the dictionary definition
+        isn't just a plain length byte, but can also contain flags.  One flag is called the
+        IMMEDIATE flag (F_IMMED in this code).  If a word in the dictionary is flagged as
+        IMMEDIATE then the interpreter runs it immediately _even if it's in compile mode_.
+
+        This is how the word ; (SEMICOLON) works -- as a word flagged in the dictionary as IMMEDIATE.
+
+        And all it does is append the codeword for EXIT on to the current definition and switch
+        back to immediate mode (set STATE back to 0).  Shortly we'll see the actual definition
+        of ; and we'll see that it's really a very simple definition, declared IMMEDIATE.
+
+        After the interpreter reads ; and executes it 'immediately', we get this:
+
+        +---------+---+---+---+---+---+---+---+---+------------+------------+------------+------------+
+        | LINK    | 6 | D | O | U | B | L | E | 0 | DOCOL      | DUP        | +          | EXIT       |
+        +---------+---+---+---+---+---+---+---+---+------------+------------+------------+------------+
+                   len                         pad  codeword                                           ^
+                                                                                                       |
+                                                                                                      HERE
+        STATE is set to 0.
+
+        And that's it, job done, our new definition is compiled, and we're back in immediate mode
+        just reading and executing words, perhaps including a call to test our new word DOUBLE.
+
+        The only last wrinkle in this is that while our word was being compiled, it was in a
+        half-finished state.  We certainly wouldn't want DOUBLE to be called somehow during
+        this time.  There are several ways to stop this from happening, but in FORTH what we
+        do is flag the word with the HIDDEN flag (F_HIDDEN in this code) just while it is
+        being compiled.  This prevents FIND from finding it, and thus in theory stops any
+        chance of it being called.
+
+        The above explains how compiling, : (COLON) and ; (SEMICOLON) works and in a moment I'm
+        going to define them.  The : (COLON) function can be made a little bit more general by writing
+        it in two parts.  The first part, called CREATE, makes just the header:
+
+                                                   +-- Afterwards, HERE points here.
+                                                   |
+                                                   V
+        +---------+---+---+---+---+---+---+---+---+
+        | LINK    | 6 | D | O | U | B | L | E | 0 |
+        +---------+---+---+---+---+---+---+---+---+
+                   len                         pad
+
+        and the second part, the actual definition of : (COLON), calls CREATE and appends the
+        DOCOL codeword, so leaving:
+
+                                                                +-- Afterwards, HERE points here.
+                                                                |
+                                                                V
+        +---------+---+---+---+---+---+---+---+---+------------+
+        | LINK    | 6 | D | O | U | B | L | E | 0 | DOCOL      |
+        +---------+---+---+---+---+---+---+---+---+------------+
+                   len                         pad  codeword
+
+        CREATE is a standard FORTH word and the advantage of this split is that we can reuse it to
+        create other types of words (not just ones which contain code, but words which contain variables,
+        constants and other data).
+*)
         let readString (vm:ForthVM) address length = 
             let arr = Array.create length ' '
             for i in 0..(length - 1) do
                 arr.[i] <- char (vm.memory.[address + i])
             new String(arr)
 
-        let CREATE = x.defcodeRetCodeword "CREATE" Flags.NONE (fun vm -> 
+        let CREATE = x.defcode "CREATE" Flags.NONE (fun vm -> 
             let length = vm.SP.pop()
             let address = vm.SP.pop()
             let name = readString vm address length
             x.create name Flags.NONE
             words.NEXT 
         )
+
+(*
+        Because I want to define : (COLON) in FORTH, not assembler, we need a few more FORTH words
+        to use.
+
+        The first is , (COMMA) which is a standard FORTH word which appends a 32 bit integer to the user
+        memory pointed to by HERE, and adds 4 to HERE.  So the action of , (COMMA) is:
+
+                                                        previous value of HERE
+                                                                 |
+                                                                 V
+        +---------+---+---+---+---+---+---+---+---+-- - - - - --+------------+
+        | LINK    | 6 | D | O | U | B | L | E | 0 |             |  <data>    |
+        +---------+---+---+---+---+---+---+---+---+-- - - - - --+------------+
+                   len                         pad                            ^
+                                                                              |
+                                                                        new value of HERE
+
+        and <data> is whatever 32 bit integer was at the top of the stack.
+
+        , (COMMA) is quite a fundamental operation when compiling.  It is used to append codewords
+        to the current word that is being compiled.
+*)
+
         let _COMMA (vm:ForthVM) v =
             let address = vm.HERE.value
-            Memory.setInt vm.memory address v
-            vm.HERE.value <-address + Memory.baseSize
+            Memory.setInt vm.memory address v// Store it.
+            vm.HERE.value <-address + Memory.baseSize// Update HERE (incremented)
 
-        let COMMA = x.defcodeRetCodeword "," Flags.NONE (fun vm -> 
-            let v = vm.SP.pop()
+        let COMMA = x.defcode "," Flags.NONE (fun vm -> 
+            let v = vm.SP.pop()// Code pointer to store.
             _COMMA vm v
             words.NEXT 
         )
 
-        let LBRAC = x.defcodeRetCodeword "[" Flags.IMMEDIATE (fun vm -> 
+(*
+        Our definitions of : (COLON) and ; (SEMICOLON) will need to switch to and from compile mode.
+
+        Immediate mode vs. compile mode is stored in the global variable STATE, and by updating this
+        variable we can switch between the two modes.
+
+        For various reasons which may become apparent later, FORTH defines two standard words called
+        [ and ] (LBRAC and RBRAC) which switch between modes:
+
+        Word    Assembler       Action          Effect
+        [       LBRAC           STATE := 0      Switch to immediate mode.
+        ]       RBRAC           STATE := 1      Switch to compile mode.
+
+        [ (LBRAC) is an IMMEDIATE word.  The reason is as follows: If we are in compile mode and the
+        interpreter saw [ then it would compile it rather than running it.  We would never be able to
+        switch back to immediate mode!  So we flag the word as IMMEDIATE so that even in compile mode
+        the word runs immediately, switching us back to immediate mode.
+*)
+        let LBRAC = x.defcode "[" Flags.IMMEDIATE (fun vm -> 
             vm.STATE.value <- 0
             words.NEXT 
         )
-        let RBRAC = x.defcodeRetCodeword "]" Flags.IMMEDIATE (fun vm -> 
+        let RBRAC = x.defcode "]" Flags.IMMEDIATE (fun vm -> 
             vm.STATE.value <- 1
             words.NEXT 
         )
+(*
+        EXTENDING THE COMPILER ----------------------------------------------------------------------
 
+        Words flagged with IMMEDIATE (F_IMMED) aren't just for the FORTH compiler to use.  You can define
+        your own IMMEDIATE words too, and this is a crucial aspect when extending basic FORTH, because
+        it allows you in effect to extend the compiler itself.  Does gcc let you do that?
+
+        Standard FORTH words like IF, WHILE, .''
+        and so on are all written as extensions to the basic
+        compiler, and are all IMMEDIATE words.
+
+        The IMMEDIATE word toggles the F_IMMED (IMMEDIATE flag) on the most recently defined word,
+        or on the current word if you call it in the middle of a definition.
+
+        Typical usage is:
+
+        : MYIMMEDWORD IMMEDIATE
+                ...definition...
+        ;
+
+        but some FORTH programmers write this instead:
+
+        : MYIMMEDWORD
+                ...definition...
+        ; IMMEDIATE
+
+        The two usages are equivalent, to a first approximation.
+*)
         let toggleWordFlag wordAddress (flag:Flags) (vm:ForthVM)  = 
             let flagsAddress = wordAddress + Memory.baseSize
             let flagsLen = vm.memory.[flagsAddress]|> int
@@ -1196,14 +1734,37 @@ module Words =
 
         let immediate (vm:ForthVM) = toggleWordFlag vm.LATEST.value Flags.IMMEDIATE vm
 
-        let IMMEDIATE = x.defcodeRetCodeword "IMMEDIATE" Flags.IMMEDIATE immediate
+        let IMMEDIATE = x.defcode "IMMEDIATE" Flags.IMMEDIATE immediate
+(*
+'addr HIDDEN' toggles the hidden flag (F_HIDDEN) of the word defined at addr.  To hide the
+most recently defined word (used above in : and ; definitions) you would do:
 
+        LATEST @ HIDDEN
+
+'HIDE word' toggles the flag on a named 'word'.
+
+Setting this flag stops the word from being found by FIND, and so can be used to make 'private'
+words.  For example, to break up a large word into smaller parts you might do:
+
+        : SUB1 ... subword ... ;
+        : SUB2 ... subword ... ;
+        : SUB3 ... subword ... ;
+        : MAIN ... defined in terms of SUB1, SUB2, SUB3 ... ;
+        HIDE SUB1
+        HIDE SUB2
+        HIDE SUB3
+
+After this, only MAIN is 'exported' or seen by the rest of the program.
+*)
         let hidden (vm:ForthVM) = 
             let addr = vm.SP.pop()
             toggleWordFlag addr Flags.HIDDEN vm
 
-        let HIDDEN = x.defcodeRetCodeword "HIDDEN" Flags.IMMEDIATE hidden
-
+        let HIDDEN = x.defcode "HIDDEN" Flags.IMMEDIATE hidden
+(*
+Now we can define : (COLON) using CREATE.  It just calls CREATE, appends DOCOL (the codeword), sets
+the word HIDDEN and goes into compile mode.
+*)
         x.defword ":" Flags.NONE 
             [|
                 WORD;// Get the name of the new word
@@ -1213,7 +1774,9 @@ module Words =
                 RBRAC;// Go into compile mode.
                 codewords.EXIT// Return from the function.
             |]
-        
+(*
+; (SEMICOLON) is also elegantly simple.  Notice the F_IMMED flag.
+*)
         x.defword ";" Flags.IMMEDIATE 
             [|
                 LIT; codewords.EXIT; COMMA;// Append EXIT (so the word will return).
@@ -1223,24 +1786,100 @@ module Words =
             |]
         x.defword "HIDE" Flags.NONE [|WORD;FIND;HIDDEN;codewords.EXIT|]
 
-        let TICK = x.defcodeRetCodeword "'" Flags.NONE (fun vm ->
-            vm.SP.push <| Memory.getInt vm.memory vm.IP//todo check
-            vm.IP <- vm.IP + Memory.baseSize
+(*
+        ' (TICK) is a standard FORTH word which returns the codeword pointer of the next word.
+
+        The common usage is:
+
+        ' FOO ,
+
+        which appends the codeword of FOO to the current word we are defining (this only works in compiled code).
+
+        You tend to use ' in IMMEDIATE words.  For example an alternate (and rather useless) way to define
+        a literal 2 might be:
+
+        : LIT2 IMMEDIATE
+                ' LIT ,         \ Appends LIT to the currently-being-defined word
+                2 ,             \ Appends the number 2 to the currently-being-defined word
+        ;
+
+        So you could do:
+
+        : DOUBLE LIT2 * ;
+
+        (If you don't understand how LIT2 works, then you should review the material about compiling words
+        and immediate mode).
+
+        This definition of ' uses a cheat which I copied from buzzard92.  As a result it only works in
+        compiled code.  It is possible to write a version of ' based on WORD, FIND, >CFA which works in
+        immediate mode too.
+*)
+        let TICK = x.defcode "'" Flags.NONE (fun vm ->
+            vm.SP.push <| Memory.getInt vm.memory vm.IP // Get the address of the next word. Push it on the stack.
+            vm.IP <- vm.IP + Memory.baseSize//and skip it.
             words.NEXT 
         )
 
-        let BRANCH = x.defcodeRetCodeword "BRANCH" Flags.NONE (fun vm ->
+(*
+        BRANCHING ----------------------------------------------------------------------
+
+        It turns out that all you need in order to define looping constructs, IF-statements, etc.
+        are two primitives.
+
+        BRANCH is an unconditional branch. 0BRANCH is a conditional branch (it only branches if the
+        top of stack is zero).
+
+        The diagram below shows how BRANCH works in some imaginary compiled word.  When BRANCH executes,
+        %esi starts by pointing to the offset field (compare to LIT above):
+
+        +---------------------+-------+---- - - ---+------------+------------+---- - - - ----+------------+
+        | (Dictionary header) | DOCOL |            | BRANCH     | offset     | (skipped)     | word       |
+        +---------------------+-------+---- - - ---+------------+-----|------+---- - - - ----+------------+
+                                                                   ^  |                       ^
+                                                                   |  |                       |
+                                                                   |  +-----------------------+
+                                                                  %esi added to offset
+
+        The offset is added to %esi to make the new %esi, and the result is that when NEXT runs, execution
+        continues at the branch target.  Negative offsets work as expected.
+
+        0BRANCH is the same except the branch happens conditionally.
+
+        Now standard FORTH words such as IF, THEN, ELSE, WHILE, REPEAT, etc. can be implemented entirely
+        in FORTH.  They are IMMEDIATE words which append various combinations of BRANCH or 0BRANCH
+        into the word currently being compiled.
+
+        As an example, code written like this:
+
+                condition-code IF true-part THEN rest-code
+
+        compiles to:
+
+                condition-code 0BRANCH OFFSET true-part rest-code
+                                          |             ^
+                                          |             |
+                                          +-------------+
+*)
+        let BRANCH = x.defcode "BRANCH" Flags.NONE (fun vm ->
             vm.IP <- vm.IP + Memory.getInt vm.memory vm.IP // add the offset to the instruction pointer
             words.NEXT 
         )
-        x.defcode "0BRANCH" Flags.NONE (fun vm ->
+        let ZBRANCH = x.defcode "0BRANCH" Flags.NONE (fun vm ->
             if vm.SP.pop () = 0 // top of stack is zero?
             then vm.IP <- vm.IP + Memory.getInt vm.memory vm.IP // add the offset to the instruction pointer
             else vm.IP <- vm.IP + Memory.baseSize// otherwise we need to skip the offset
             words.NEXT 
         )
+(*
+        LITERAL STRINGS ----------------------------------------------------------------------
 
-        x.defcode "LITSTRING" Flags.NONE (fun vm ->
+        LITSTRING is a primitive used to implement the ." and S" operators (which are written in
+        FORTH).  See the definition of those operators later.
+
+        TELL just prints a string.  It's more efficient to define this in assembly because we
+        can make it a single Linux syscall.
+*)
+        let LITSTRING = x.defcode "LITSTRING" Flags.NONE (fun vm ->
             let length = Memory.getInt vm.memory vm.IP
             vm.IP <- vm.IP + Memory.baseSize
             vm.SP.push vm.IP     // push the address of the start of the string
@@ -1248,15 +1887,32 @@ module Words =
             vm.IP <- vm.IP + length |> Memory.pad  // skip past the string and round up to next BaseSize byte boundary
             words.NEXT 
         )
-        x.defcode "TELL" Flags.NONE (fun vm ->
+        let TELL = x.defcode "TELL" Flags.NONE (fun vm ->
             let length = vm.SP.pop()
             let address = vm.SP.pop()
             vm.out_buffer.setString {address = address; size = length}
             words.NEXT 
         )
 
+(*
+QUIT AND INTERPRET ----------------------------------------------------------------------
 
-        let INTERPRET = x.defcodeRetCodeword "INTERPRET" Flags.NONE (fun vm ->
+QUIT is the first FORTH function called, almost immediately after the FORTH system "boots".
+As explained before, QUIT doesn't "quit" anything.  It does some initialisation (in particular
+it clears the return stack) and it calls INTERPRET in a loop to interpret commands.  The
+reason it is called QUIT is because you can call it from your own FORTH words in order to
+"quit" your program and start again at the user prompt.
+
+INTERPRET is the FORTH interpreter ("toploop", "toplevel" or "REPL" might be a more accurate
+description -- see: http://en.wikipedia.org/wiki/REPL).
+*)
+
+(*
+        This interpreter is pretty simple, but remember that in FORTH you can always override
+        it later with a more powerful one!
+ *)
+
+        let INTERPRET = x.defcode "INTERPRET" Flags.NONE (fun vm ->
             let exec cfa = 
                 vm.W<-cfa
                 Memory.getInt vm.memory cfa
@@ -1292,23 +1948,57 @@ module Words =
                             _COMMA vm number
                             words.NEXT
         )
-        
+        // QUIT must not return (ie. must not call EXIT).
         let QUIT = x.defwordRetCodeword "QUIT" Flags.NONE
                     [|
                         RZ;RSPSTORE;// R0 RSP!, clear the return stack
                         INTERPRET;// interpret the next word
                         BRANCH;-(Memory.baseSize * 2)// and loop (indefinitely)
                     |]
-        x.defcode "CHAR" Flags.NONE (fun vm ->
+
+(*
+        ODDS AND ENDS ----------------------------------------------------------------------
+
+        CHAR puts the ASCII code of the first character of the following word on the stack.  For example
+        CHAR A puts 65 on the stack.
+
+        EXECUTE is used to run execution tokens.  See the discussion of execution tokens in the
+        FORTH code for more details.
+
+        SYSCALL0, SYSCALL1, SYSCALL2, SYSCALL3 make a standard Linux system call.  (See <asm/unistd.h>
+        for a list of system call numbers).  As their name suggests these forms take between 0 and 3
+        syscall parameters, plus the system call number.
+
+        In this FORTH, SYSCALL0 must be the last word in the built-in (assembler) dictionary because we
+        initialise the LATEST variable to point to it.  This means that if you want to extend the assembler
+        part, you must put new words before SYSCALL0, or else change how LATEST is initialised.
+*)
+        let CHAR = x.defcode "CHAR" Flags.NONE (fun vm ->
             let str = _WORD vm
             //printfn "read word %s" <| Memory.toString vm.memory str
             let c = int vm.memory.[str.address]
             vm.SP.push c
             words.NEXT
         )
-        x.defcode "EXECUTE" Flags.NONE (fun vm ->
+        let EXECUTE = x.defcode "EXECUTE" Flags.NONE (fun vm ->
             let addr = vm.SP.pop()// Get xt into %eax and jump to it. After xt runs its NEXT will continue executing the current word.
             addr
         )
         x.setQUIT QUIT //cold start
 
+(*
+        START OF FORTH CODE ----------------------------------------------------------------------
+
+        We've now reached the stage where the FORTH system is running and self-hosting.  All further
+        words can be written as FORTH itself, including words like IF, THEN, .'', etc which in most
+        languages would be considered rather fundamental.
+
+        I used to append this here in the assembly file, but I got sick of fighting against gas's
+        crack-smoking (lack of) multiline string syntax.  So now that is in a separate file called
+        jonesforth.f
+
+        If you don't already have that file, download it from http://annexia.org/forth in order
+        to continue the tutorial.
+*)
+
+(* END OF jonesforth.fs *)
