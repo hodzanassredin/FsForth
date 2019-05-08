@@ -7,7 +7,8 @@ Jonesforth is one of the best implementations and tutorial at the same time.
 Unfortunately, it is hard sometimes to understand assembler code so fsForth is an attempt to made it clearer for developer without deep assembler knowledge.
 
 You just need to open [jonesforth.fs](https://github.com/hodzanassredin/FsForth/blob/master/FsForth/jonesforth.fs) and start reading.
-Second part is optional and it is more about how to work with Forth and how to use the full power of the forth programming language including metaprogramming features. [jonesforth.f]https://github.com/hodzanassredin/FsForth/blob/master/jonesforth.f).
+
+Second part [jonesforth.f](https://github.com/hodzanassredin/FsForth/blob/master/jonesforth.f) is optional and it is more about how to work with Forth and how to use the full power of the forth programming language including metaprogramming features.
 
 if you want to play with forth then install dotnet core and exec run.cmd (on windows) or ./run.sh on linux.
 
