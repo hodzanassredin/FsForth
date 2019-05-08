@@ -50,7 +50,7 @@ module Memory =
         }
 
     let validate (cursor:Cursor) = 
-        if cursor.current < cursor.span.address || cursor.current > (top cursor.span)
+        if cursor.current < cursor.span.address || cursor.current > (top cursor.span + 1)
         then failwith <| sprintf "broken span bounds %A" cursor
 
     let change op  (v:Cursor) count = 
@@ -98,7 +98,7 @@ module Memory =
         let readStdin (memory:Memory) span = 
             
             use inp = System.Console.OpenStandardInput()
-            let count = inp.Read(memory, int span.address, int span.size - 1) 
+            let count = inp.Read(memory, int span.address, int span.size) 
             count
         let mutable bufftop = cursor.span.address 
 
@@ -133,7 +133,8 @@ module Memory =
 
         member x.set c = 
             write memory cursor c
-            if isFull cursor || c = byte '\n' then x.flush()
+            if true //isFull cursor || c = byte '\n' 
+            then x.flush()
 
     type Stack(memory : Memory, cursor : Cursor)=
         do
@@ -142,8 +143,8 @@ module Memory =
         member x.top 
             with get () = cursor.current
             and set (value) = cursor.current <- value
-        member x.S0 = top cursor.span
-        member x.count () = (x.S0 - x.top) / baseSize
+        member x.S0 = top cursor.span 
+        member x.count () = (x.S0 - x.top) / baseSize 
         member x.push v = 
             dec cursor baseSize |> ignore
             setInt memory cursor.current v
@@ -157,7 +158,7 @@ module Memory =
     
         member x.apply f = x.peek 0 |> f |> setInt memory cursor.current 
         override x.ToString() = 
-            seq {x.top..baseSize..x.S0} 
+            seq {x.top..baseSize..(x.S0-baseSize)} 
             |> Seq.map (getInt memory)
             |> Seq.map string
             |> String.concat ";"
@@ -500,18 +501,18 @@ module Words =
         //n1 n2 – f  
         def applyBool2 "=" (=)
         def applyBool2 "<>" (<>)
-        def applyBool2 "<" (<)
-        def applyBool2 ">" (>)
-        def applyBool2 "<=" (<=)
-        def applyBool2 ">=" (>=)
-        def applyBool2 ">" (>)
+        def applyBool2 "<" <| flip (<)
+        def applyBool2 ">" <| flip (>)
+        def applyBool2 "<=" <| flip (<=)
+        def applyBool2 ">=" <| flip (>=)
+        def applyBool2 ">" <| flip (>)
     
-        def applyBool "0=" <| (=) 0
-        def applyBool "0<>" <| (<>) 0
-        def applyBool "0<" <| (<) 0
-        def applyBool "0>" <| (>) 0
-        def applyBool "0<=" <| (<=) 0
-        def applyBool "0>=" <| (>=) 0
+        def applyBool "0=" <| flip (=) 0
+        def applyBool "0<>" <| flip (<>) 0
+        def applyBool "0<" <| flip (<) 0
+        def applyBool "0>" <| flip (>) 0
+        def applyBool "0<=" <| flip (<=) 0
+        def applyBool "0>=" <| flip (>=) 0
         //bitwise
         def apply2 "AND" (&&&) 
         def apply2 "OR" (|||) 

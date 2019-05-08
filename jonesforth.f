@@ -1373,7 +1373,6 @@
 : WELCOME
         S" TEST-MODE" FIND NOT IF
                 ." JONESFORTH VERSION " VERSION . CR
-                UNUSED . ." CELLS REMAINING" CR
                 ." OK "
         THEN
 ;

@@ -5,8 +5,8 @@ open System.Runtime.InteropServices
 open Forth
 
 let printState (vm:ForthVM.ForthVM) =
-    let wordsList = ForthDebug.getWordsList vm
-    let lastStr : String = List.last wordsList |> sprintf "%A"
+    //let wordsList = ForthDebug.getWordsList vm
+    //let lastStr : String = List.last wordsList |> sprintf "%A"
     //Console.Write("\tLAST WORD:{0}",lastStr.Replace("\n",""))
     //if vm.SP.count()>0 then 
     //    Console.Write("\tSTACK:{0}",vm.SP.ToString())
