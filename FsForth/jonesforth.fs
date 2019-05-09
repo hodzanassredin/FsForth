@@ -5,7 +5,7 @@
         $Id: jonesforth.S,v 1.47 2009-09-11 08:33:13 rich Exp $
 *)
 (* Notes from HodzaNassredin
-        I decided not to change all the tutorial from assembly to fsharp.
+        I decided not to change all the text from assembly to fsharp.
         Main things to know about differences:
         Instead of registers eax, esi, etc we use variables and fields of ForthVM record.
         Main fields: W - work register (%eax in assembly), IP - instruction pointer (%esi in assembly).
