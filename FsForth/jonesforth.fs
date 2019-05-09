@@ -1,27 +1,26 @@
-﻿module Forth 
+﻿(*      
+A sometimes minimal FORTH compiler and tutorial for Linux / i386 systems. -*- asm -*-
+By Richard W.M. Jones <rich@annexia.org> http://annexia.org/forth
+This is PUBLIC DOMAIN (see public domain release statement below).
+$Id: jonesforth.S,v 1.47 2009-09-11 08:33:13 rich Exp $
+*)
+(* Notes from HodzaNassredin
+I decided not to change all the tutorial from assembly to fshap.
+Main things to know about differences:
+Instead of registers eax, esi, etc we use variables and fields of ForthVM record.
+Main fields: W - work register(%eax in assembly), IP - instruction pointer (%esi in assembly).
+Memory representeed as a byte array. Memory has separate regions for different purposes.
+Every region described by a Span record. Also we have Cursor record, it is just a Span with mutable cursor.
+All that infrastructure classes defined in Hardware.fs.
+You don't have to understand now all of that. It will be more clear from the tutorial later.
+*)
+module Forth 
 
 open System
 open System.Text
 open Hardware
 
-module ForthVM =
-(*      A sometimes minimal FORTH compiler and tutorial for Linux / i386 systems. -*- asm -*-
-By Richard W.M. Jones <rich@annexia.org> http://annexia.org/forth
-This is PUBLIC DOMAIN (see public domain release statement below).
-$Id: jonesforth.S,v 1.47 2009-09-11 08:33:13 rich Exp $
 
-*)
-    let JONES_VERSION = 47
-
-    open Memory
-
-    type FnPointer = Int32
-    type PredefinedWords = {
-        NEXT : FnPointer
-        DOCOL : FnPointer //NEST
-        EXIT : FnPointer//UNNEST
-    }
-    type Fn = ForthVM -> FnPointer
 (*
 INTRODUCTION ----------------------------------------------------------------------
 
@@ -115,69 +114,22 @@ uses a fixed width font and is at least this wide:
 
  <------------------------------------------------------------------------------------------------------------------------>
 
-Secondly make sure TABS are set to 8 characters.  The following should be a vertical
-line.  If not, sort out your tabs.
-
-        |
-        |
-        |
-
-Thirdly I assume that your screen is at least 50 characters high.
+ I assume that your screen is at least 50 characters high.
 
 ASSEMBLING ----------------------------------------------------------------------
 
-If you want to actually run this FORTH, rather than just read it, you will need Linux on an
-i386.  Linux because instead of programming directly to the hardware on a bare PC which I
-could have done, I went for a simpler tutorial by assuming that the 'hardware' is a Linux
-process with a few basic system calls (read, write and exit and that's about all).  i386
-is needed because I had to write the assembly for a processor, and i386 is by far the most
-common.  (Of course when I say 'i386', any 32- or 64-bit x86 processor will do.  I'm compiling
-this on a 64 bit AMD Opteron).
+If you want to actually run this FORTH, rather than just read it, you will need dot net core.  
 
-Again, to assemble this you will need gcc and gas (the GNU assembler).  The commands to
-assemble and run the code (save this file as 'jonesforth.S') are:
+Again, to assemble this you will need dot net core installed.  The commands to
+assemble and run the code are:
 
-gcc -m32 -nostdlib -static -Wl,-Ttext,0 -Wl,--build-id=none -o jonesforth jonesforth.S
-cat jonesforth.f - | ./jonesforth
+cat jonesforth.f - | dotnet run -p FsForth/FsForth.fsproj
 
 If you want to run your own FORTH programs you can do:
-
-cat jonesforth.f myprog.f | ./jonesforth
+cat jonesforth.f myprog.f | dotnet run -p FsForth/FsForth.fsproj
 
 If you want to load your own FORTH code and then continue reading user commands, you can do:
-
-cat jonesforth.f myfunctions.f - | ./jonesforth
-
-ASSEMBLER ----------------------------------------------------------------------
-
-(You can just skip to the next section -- you don't need to be able to read assembler to
-follow this tutorial).
-
-However if you do want to read the assembly code here are a few notes about gas (the GNU assembler):
-
-(1) Register names are prefixed with '%', so %eax is the 32 bit i386 accumulator.  The registers
-    available on i386 are: %eax, %ebx, %ecx, %edx, %esi, %edi, %ebp and %esp, and most of them
-    have special purposes.
-
-(2) Add, mov, etc. take arguments in the form SRC,DEST.  So mov %eax,%ecx moves %eax -> %ecx
-
-(3) Constants are prefixed with '$', and you mustn't forget it!  If you forget it then it
-    causes a read from memory instead, so:
-    mov $2,%eax         moves number 2 into %eax
-    mov 2,%eax          reads the 32 bit word from address 2 into %eax (ie. most likely a mistake)
-
-(4) gas has a funky syntax for local labels, where '1f' (etc.) means label '1:' "forwards"
-    and '1b' (etc.) means label '1:' "backwards".  Notice that these labels might be mistaken
-    for hex numbers (eg. you might confuse 1b with $0x1b).
-
-(5) 'ja' is "jump if above", 'jb' for "jump if below", 'je' "jump if equal" etc.
-
-(6) gas has a reasonably nice .macro syntax, and I use them a lot to make the code shorter and
-    less repetitive.
-
-For more help reading the assembler, do "info gas" at the Linux prompt.
-
-Now the tutorial starts in earnest.
+cat jonesforth.f myfunctions.f - | dotnet run -p FsForth/FsForth.fsproj
 
 THE DICTIONARY ----------------------------------------------------------------------
 
@@ -317,21 +269,16 @@ which literally make the jump to the next subroutine.
 
 And that brings us to our first piece of actual code!  Well, it's a macro.
 *)
-
-    and CodeMemory()=
-        //native funcs addressable storage
-        let nativeFuncs : Fn[] = Array.zeroCreate (1<<<8) 
-        let mutable nextFnPointer = 0
-        let addFn f = 
-            nativeFuncs.[nextFnPointer] <- f
-            nextFnPointer <- nextFnPointer + 1
-            nextFnPointer - 1
-    
-        let nextF (vm:ForthVM) = 
-            vm.W <- getInt vm.memory vm.IP//current codeword
-            vm.IP <- vm.IP + baseSize
-            getInt vm.memory vm.W//native fn address
-        let next = addFn nextF
+module Forth =
+    let JONES_VERSION = 47
+    open Hardware.ForthVM
+    open CodeMemory
+    let createBaseWords (code : CodeMemory<Fn>) = 
+        let next = code.addFunction ( fun (vm:ForthVM) ->
+            vm.W <- Memory.getInt vm.memory vm.IP//current codeword
+            vm.IP <- vm.IP + Memory.baseSize
+            Memory.getInt vm.memory vm.W//native fn address
+        )
 (*      The macro is called NEXT.  That's a FORTH-ism.  It expands to those two instructions.
 
         Every FORTH primitive that we write has to be ended by NEXT.  Think of it kind of like
@@ -508,12 +455,12 @@ And that brings us to our first piece of actual code!  Well, it's a macro.
 
 (* DOCOL - the interpreter! *)
         //alternative name: enter
-        let docol (vm:ForthVM) = 
+        let docol = code.addFunction ( fun (vm:ForthVM) ->
             vm.RSP.push vm.IP
             vm.IP <- vm.W
-            vm.IP <- vm.IP + baseSize
+            vm.IP <- vm.IP + Memory.baseSize
             next
-        let docol = addFn docol
+        )
 (*
 Just to make this absolutely clear, let's see how DOCOL works when jumping from QUADRUPLE
 into DOUBLE:
@@ -569,92 +516,15 @@ anything.  It resets some internal state and starts reading and interpreting com
 (The reason it is called QUIT is because you can call QUIT from your own FORTH code
 to "quit" your program and go back to interpreting).
 *)
-        //alternative names: exit
-        let exit (vm:ForthVM) =
+        //alternative names: unnest
+        let exit = code.addFunction ( fun (vm:ForthVM) ->
             vm.IP <- vm.RSP.pop() 
             next
-    
-        let exit = addFn exit
-
-        let constFn (vm:ForthVM) =
-            let value = getInt vm.memory (vm.W + baseSize)
-            vm.SP.push value 
-            next
-
-        member x.CONST = addFn constFn
-    
-        member x.DirectPredefinedWords = {
+        )
+        {
             NEXT = next
             DOCOL = docol
             EXIT = exit
-        }
-
-        member x.addFunction = addFn
-    
-        member x.get idx = 
-            if next = idx then nextF else nativeFuncs.[idx]
-
-    and ForthVM = {
-        memory : Memory
-        allocated : Cursor
-        data : Cursor
-        SP : Stack
-        RSP : Stack
-        input_buffer : InputBuffer
-        out_buffer : OutputBuffer
-        word_buffer : StringBuffer
-        STATE : Variable
-        LATEST : Variable
-        HERE : Variable
-        BASE : Variable
-        errmsg : Span
-        errmsgnl : Span
-        mutable IP : int //istruction pointer in bytes esi
-        mutable W : int //work eax
-
-        //indirect fn calls
-        NEXT : Variable
-        DOCOL : Variable
-        EXIT : Variable
-        QUIT : Variable//cold start
-    }
-
-    let create size config  = 
-        let memory = createMemory size
-        let allocated = createCursor 0 size 
-        let allocate bytes init = 
-            let address = inc allocated bytes
-            let c = createCursor address bytes
-            init (memory,c)
-
-        let var init (memory, cursor) = Variable(memory, cursor, init)
-
-        let reserveString (str:string) = 
-            let arr = Encoding.ASCII.GetBytes str
-            let init (m,c) = copyFromBytes m c.span.address arr
-                             c.span
-            allocate arr.Length init
-        {
-            memory = memory
-            allocated = allocated
-            data = allocate config.INITIAL_DATA_SEGMENT_SIZE snd
-            SP = allocate config.DATA_STACK_SIZE Stack
-            RSP = allocate config.RETURN_STACK_SIZE Stack
-            input_buffer = allocate config.BUFFER_SIZE InputBuffer
-            out_buffer= allocate config.BUFFER_SIZE OutputBuffer
-            word_buffer = allocate 32 StringBuffer
-            STATE = allocate baseSize  <| var 0
-            LATEST = allocate baseSize  <| var 0
-            HERE = allocate baseSize  <| var 1//0 is not defined word
-            BASE = allocate baseSize  <| var 10
-            errmsg = reserveString "PARSE ERROR: "
-            errmsgnl = reserveString Environment.NewLine
-            IP = 0
-            W = 0
-            NEXT = allocate baseSize  <| var 0
-            DOCOL = allocate baseSize  <| var 0
-            EXIT = allocate baseSize  <| var 0
-            QUIT = allocate baseSize  <| var 0
         }
 (*
 BUILT-IN WORDS ----------------------------------------------------------------------
@@ -697,10 +567,7 @@ defword "DOUBLE",6,,DOUBLE
 
 and I'll get exactly the same effect.
 
-Don't worry too much about the exact implementation details of this macro - it's complicated!
 *)
-module Words = 
-    open ForthVM
 (* Flags - these are discussed later. *)
     [<Flags>]
     type Flags =
@@ -711,31 +578,37 @@ module Words =
     let LENMASK = 0x1f// length mask
     type ReadMode = SKIP|WORD|COMMENT//word parser modes
 
-    type Writer(vm:ForthVM, code:CodeMemory) =
+    type Writer(vm:ForthVM) =
+        let baseWords = createBaseWords vm.CodeMemory
         let writeByte (v:byte) = 
-            let address = vm.HERE.value
-            vm.memory.[address] <- v
-            vm.HERE.value <- address + 1
+            let address = vm.HERE.value//get current address
+            vm.memory.[address] <- v//write byte
+            vm.HERE.value <- address + 1//update current address
 
         let write (v:Int32) = 
-            let address = vm.HERE.value
-            Memory.setInt vm.memory address v
-            vm.HERE.value <- address + Memory.baseSize
+            let address = vm.HERE.value//get current address
+            Memory.setInt vm.memory address v//write int
+            vm.HERE.value <- address + Memory.baseSize//update current address
         
         let writeString (str:String) = Encoding.ASCII.GetBytes str |> Array.iter writeByte 
 
         let align () = vm.HERE.value <- Memory.pad vm.HERE.value  
+        do
+            //init inderect base words addresses
+            vm.NEXT.value <- baseWords.NEXT
+            vm.DOCOL.value <- baseWords.DOCOL
+            vm.EXIT.value <- baseWords.EXIT
+
+        member x.setEntryPoint codeword = vm.EntryPoint.value <- codeword
         
-        member x.setIndirectPredefinedWords () =
-            vm.NEXT.value <- code.DirectPredefinedWords.NEXT
-            vm.DOCOL.value <- code.DirectPredefinedWords.DOCOL
-            vm.EXIT.value <- code.DirectPredefinedWords.EXIT
+        member x.PredefinedWords = baseWords
+        member x.IndirectPredefinedWords =
             {
                 NEXT = vm.NEXT.address
                 DOCOL = vm.DOCOL.address
                 EXIT = vm.EXIT.address
             }
-        member x.setQUIT quit = vm.QUIT.value <- quit
+        //write word header
         member x.create (name: string) (flags:Flags) =
             let nameSize = byte name.Length
             assert (nameSize <= 31uy)
@@ -748,7 +621,7 @@ module Words =
             writeString name// the name
             align()// padding to next 4 byte boundary
 
-        member x.writeCodewordPayloadRetCodeword (name: string) (flags:Flags) (codeword:FnPointer) (payload:Int32[]) = 
+        member x.writeCodewordAndPayload (name: string) (flags:Flags) (codeword:CodeMemory.FnPointer) (payload:Int32[]) = 
             x.create name flags 
             let codewordAddr = vm.HERE.value
             write codeword
@@ -757,12 +630,8 @@ module Words =
                 write d 
             codewordAddr
 
-        member x.defwordRetCodeword (name: string) (flags:Flags) (program:Int32[]) = 
-            x.writeCodewordPayloadRetCodeword name flags code.DirectPredefinedWords.DOCOL program // codeword - the interpreter
-
         member x.defword (name: string) (flags:Flags) (program:Int32[]) = 
-            x.defwordRetCodeword name flags program |>ignore
-
+            x.writeCodewordAndPayload name flags baseWords.DOCOL program // codeword - the interpreter
 (*
 Similarly I want a way to write words written in assembly language.  There will quite a few
 of these to start with because, well, everything has to start in assembly before there's
@@ -785,15 +654,15 @@ Again, for brevity in writing the header I'm going to write an assembler macro c
 As with defword above, don't worry about the complicated details of the macro.
 *)
         member x.defcode (name: string) (flags:Flags) (f:Fn) = 
-            let fAddr = code.addFunction f
-            x.writeCodewordPayloadRetCodeword name flags fAddr Array.empty
+            let fAddr = vm.CodeMemory.addFunction f
+            x.writeCodewordAndPayload name flags fAddr Array.empty
 
         member x.defconst (name: string) (flags:Flags) (value:ForthVM ->Int32) = 
             let value = value vm
             //x.writeCodewordPayloadRetCodeword name flags code.CONST [|value|]
             x.defcode name flags (fun vm -> 
                 vm.SP.push value
-                code.DirectPredefinedWords.NEXT
+                baseWords.NEXT
             )
 
         //add variable
@@ -805,8 +674,9 @@ As with defword above, don't worry about the complicated details of the macro.
             x.defconst name flags (fun vm -> varAddress)
         
         
-    let init (x: Writer) (words:PredefinedWords) = 
-        let codewords = x.setIndirectPredefinedWords ()
+    let init (x: Writer) = 
+        let words = x.PredefinedWords
+        let codewords = x.IndirectPredefinedWords 
 (*
 Now some easy FORTH primitives.  These are written in assembly for speed.  If you understand
 i386 assembly language then it is worth reading these.  However if you don't understand assembly
@@ -1765,26 +1635,26 @@ After this, only MAIN is 'exported' or seen by the rest of the program.
 Now we can define : (COLON) using CREATE.  It just calls CREATE, appends DOCOL (the codeword), sets
 the word HIDDEN and goes into compile mode.
 *)
-        x.defword ":" Flags.NONE 
-            [|
-                WORD;// Get the name of the new word
-                CREATE;// CREATE the dictionary entry / header
-                LIT; words.DOCOL; COMMA;// Append DOCOL  (the codeword).
-                LATEST; FETCH; HIDDEN // Make the word hidden (see below for definition).
-                RBRAC;// Go into compile mode.
-                codewords.EXIT// Return from the function.
-            |]
+        let COLON = x.defword ":" Flags.NONE 
+                        [|
+                            WORD;// Get the name of the new word
+                            CREATE;// CREATE the dictionary entry / header
+                            LIT; words.DOCOL; COMMA;// Append DOCOL  (the codeword).
+                            LATEST; FETCH; HIDDEN // Make the word hidden (see below for definition).
+                            RBRAC;// Go into compile mode.
+                            codewords.EXIT// Return from the function.
+                        |]
 (*
 ; (SEMICOLON) is also elegantly simple.  Notice the F_IMMED flag.
 *)
-        x.defword ";" Flags.IMMEDIATE 
-            [|
-                LIT; codewords.EXIT; COMMA;// Append EXIT (so the word will return).
-                LATEST; FETCH; HIDDEN; // Toggle hidden flag -- unhide the word (see below for definition).
-                LBRAC;// Go back to IMMEDIATE mode.
-                codewords.EXIT;// Return from the function.
-            |]
-        x.defword "HIDE" Flags.NONE [|WORD;FIND;HIDDEN;codewords.EXIT|]
+        let COSEMICOLONLON = x.defword ";" Flags.IMMEDIATE 
+                                [|
+                                    LIT; codewords.EXIT; COMMA;// Append EXIT (so the word will return).
+                                    LATEST; FETCH; HIDDEN; // Toggle hidden flag -- unhide the word (see below for definition).
+                                    LBRAC;// Go back to IMMEDIATE mode.
+                                    codewords.EXIT;// Return from the function.
+                                |]
+        let HIDE = x.defword "HIDE" Flags.NONE [|WORD;FIND;HIDDEN;codewords.EXIT|]
 
 (*
         ' (TICK) is a standard FORTH word which returns the codeword pointer of the next word.
@@ -1949,7 +1819,7 @@ description -- see: http://en.wikipedia.org/wiki/REPL).
                             words.NEXT
         )
         // QUIT must not return (ie. must not call EXIT).
-        let QUIT = x.defwordRetCodeword "QUIT" Flags.NONE
+        let QUIT = x.defword "QUIT" Flags.NONE
                     [|
                         RZ;RSPSTORE;// R0 RSP!, clear the return stack
                         INTERPRET;// interpret the next word
@@ -1984,7 +1854,7 @@ description -- see: http://en.wikipedia.org/wiki/REPL).
             let addr = vm.SP.pop()// Get xt into %eax and jump to it. After xt runs its NEXT will continue executing the current word.
             addr
         )
-        x.setQUIT QUIT //cold start
+        x.setEntryPoint QUIT //cold start
 
 (*
         START OF FORTH CODE ----------------------------------------------------------------------

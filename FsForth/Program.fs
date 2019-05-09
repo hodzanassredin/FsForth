@@ -1,17 +1,13 @@
 ﻿open Hardware
 open Forth
+open CodeMemory
 
-let rec private runFn (vm:ForthVM.ForthVM) (code:ForthVM.CodeMemory) (fn : ForthVM.FnPointer)= 
-    let fn = code.get fn vm
-    runFn vm code fn
 
 let run () =
     let vm = ForthVM.create (65536 * 2) Memory.defaultConfig
-    let code = ForthVM.CodeMemory()
-    let dictWriter = Words.Writer(vm, code)
-    Words.init dictWriter code.DirectPredefinedWords
-    vm.IP <- vm.QUIT.address
-    runFn vm code code.DirectPredefinedWords.NEXT
+    let dictWriter = Forth.Writer(vm)
+    Forth.init dictWriter 
+    ForthVM.run vm dictWriter.PredefinedWords.NEXT
 
 [<EntryPoint>]
 let main argv =
