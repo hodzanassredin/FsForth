@@ -1,19 +1,20 @@
 ﻿(*      
-A sometimes minimal FORTH compiler and tutorial for Linux / i386 systems. -*- asm -*-
-By Richard W.M. Jones <rich@annexia.org> http://annexia.org/forth
-This is PUBLIC DOMAIN (see public domain release statement below).
-$Id: jonesforth.S,v 1.47 2009-09-11 08:33:13 rich Exp $
+        A sometimes minimal FORTH compiler and tutorial for Linux / i386 systems. -*- asm -*-
+        By Richard W.M. Jones <rich@annexia.org> http://annexia.org/forth
+        This is PUBLIC DOMAIN (see public domain release statement below).
+        $Id: jonesforth.S,v 1.47 2009-09-11 08:33:13 rich Exp $
 *)
 (* Notes from HodzaNassredin
-I decided not to change all the tutorial from assembly to fshap.
-Main things to know about differences:
-Instead of registers eax, esi, etc we use variables and fields of ForthVM record.
-Main fields: W - work register(%eax in assembly), IP - instruction pointer (%esi in assembly).
-Memory representeed as a byte array. Memory has separate regions for different purposes.
-Every region described by a Span record. Also we have Cursor record, it is just a Span with mutable cursor.
-All that infrastructure classes defined in Hardware.fs.
-You don't have to understand now all of that. It will be more clear from the tutorial later.
+        I decided not to change all the tutorial from assembly to fsharp.
+        Main things to know about differences:
+        Instead of registers eax, esi, etc we use variables and fields of ForthVM record.
+        Main fields: W - work register (%eax in assembly), IP - instruction pointer (%esi in assembly).
+        Memory represented as a byte array. Memory has separate regions for different purposes.
+        Every region described by a Span record. Also, we have Cursor record, it is just a Span with a mutable cursor.
+        All that infrastructure classes defined in Hardware.fs.
+        You don't have to understand all of that from the start. It will be clearer from the tutorial later.
 *)
+
 module Forth 
 
 open System
@@ -22,252 +23,252 @@ open Hardware
 
 
 (*
-INTRODUCTION ----------------------------------------------------------------------
+        INTRODUCTION ----------------------------------------------------------------------
 
-FORTH is one of those alien languages which most working programmers regard in the same
-way as Haskell, LISP, and so on.  Something so strange that they'd rather any thoughts
-of it just go away so they can get on with writing this paying code.  But that's wrong
-and if you care at all about programming then you should at least understand all these
-languages, even if you will never use them.
+        FORTH is one of those alien languages which most working programmers regard in the same
+        way as Haskell, LISP, and so on.  Something so strange that they'd rather any thoughts
+        of it just go away so they can get on with writing this paying code.  But that's wrong
+        and if you care at all about programming then you should at least understand all these
+        languages, even if you will never use them.
 
-LISP is the ultimate high-level language, and features from LISP are being added every
-decade to the more common languages.  But FORTH is in some ways the ultimate in low level
-programming.  Out of the box it lacks features like dynamic memory management and even
-strings.  In fact, at its primitive level it lacks even basic concepts like IF-statements
-and loops.
+        LISP is the ultimate high-level language, and features from LISP are being added every
+        decade to the more common languages.  But FORTH is in some ways the ultimate in low level
+        programming.  Out of the box it lacks features like dynamic memory management and even
+        strings.  In fact, at its primitive level it lacks even basic concepts like IF-statements
+        and loops.
 
-Why then would you want to learn FORTH?  There are several very good reasons.  First
-and foremost, FORTH is minimal.  You really can write a complete FORTH in, say, 2000
-lines of code.  I don't just mean a FORTH program, I mean a complete FORTH operating
-system, environment and language.  You could boot such a FORTH on a bare PC and it would
-come up with a prompt where you could start doing useful work.  The FORTH you have here
-isn't minimal and uses a Linux process as its 'base PC' (both for the purposes of making
-it a good tutorial). It's possible to completely understand the system.  Who can say they
-completely understand how Linux works, or gcc?
+        Why then would you want to learn FORTH?  There are several very good reasons.  First
+        and foremost, FORTH is minimal.  You really can write a complete FORTH in, say, 2000
+        lines of code.  I don't just mean a FORTH program, I mean a complete FORTH operating
+        system, environment and language.  You could boot such a FORTH on a bare PC and it would
+        come up with a prompt where you could start doing useful work.  The FORTH you have here
+        isn't minimal and uses a Linux process as its 'base PC' (both for the purposes of making
+        it a good tutorial). It's possible to completely understand the system.  Who can say they
+        completely understand how Linux works, or gcc?
 
-Secondly FORTH has a peculiar bootstrapping property.  By that I mean that after writing
-a little bit of assembly to talk to the hardware and implement a few primitives, all the
-rest of the language and compiler is written in FORTH itself.  Remember I said before
-that FORTH lacked IF-statements and loops?  Well of course it doesn't really because
-such a lanuage would be useless, but my point was rather that IF-statements and loops are
-written in FORTH itself.
+        Secondly FORTH has a peculiar bootstrapping property.  By that I mean that after writing
+        a little bit of assembly to talk to the hardware and implement a few primitives, all the
+        rest of the language and compiler is written in FORTH itself.  Remember I said before
+        that FORTH lacked IF-statements and loops?  Well of course it doesn't really because
+        such a lanuage would be useless, but my point was rather that IF-statements and loops are
+        written in FORTH itself.
 
-Now of course this is common in other languages as well, and in those languages we call
-them 'libraries'.  For example in C, 'printf' is a library function written in C.  But
-in FORTH this goes way beyond mere libraries.  Can you imagine writing C's 'if' in C?
-And that brings me to my third reason: If you can write 'if' in FORTH, then why restrict
-yourself to the usual if/while/for/switch constructs?  You want a construct that iterates
-over every other element in a list of numbers?  You can add it to the language.  What
-about an operator which pulls in variables directly from a configuration file and makes
-them available as FORTH variables?  Or how about adding Makefile-like dependencies to
-the language?  No problem in FORTH.  How about modifying the FORTH compiler to allow
-complex inlining strategies -- simple.  This concept isn't common in programming languages,
-but it has a name (in fact two names): "macros" (by which I mean LISP-style macros, not
-the lame C preprocessor) and "domain specific languages" (DSLs).
+        Now of course this is common in other languages as well, and in those languages we call
+        them 'libraries'.  For example in C, 'printf' is a library function written in C.  But
+        in FORTH this goes way beyond mere libraries.  Can you imagine writing C's 'if' in C?
+        And that brings me to my third reason: If you can write 'if' in FORTH, then why restrict
+        yourself to the usual if/while/for/switch constructs?  You want a construct that iterates
+        over every other element in a list of numbers?  You can add it to the language.  What
+        about an operator which pulls in variables directly from a configuration file and makes
+        them available as FORTH variables?  Or how about adding Makefile-like dependencies to
+        the language?  No problem in FORTH.  How about modifying the FORTH compiler to allow
+        complex inlining strategies -- simple.  This concept isn't common in programming languages,
+        but it has a name (in fact two names): "macros" (by which I mean LISP-style macros, not
+        the lame C preprocessor) and "domain specific languages" (DSLs).
 
-This tutorial isn't about learning FORTH as the language.  I'll point you to some references
-you should read if you're not familiar with using FORTH.  This tutorial is about how to
-write FORTH.  In fact, until you understand how FORTH is written, you'll have only a very
-superficial understanding of how to use it.
+        This tutorial isn't about learning FORTH as the language.  I'll point you to some references
+        you should read if you're not familiar with using FORTH.  This tutorial is about how to
+        write FORTH.  In fact, until you understand how FORTH is written, you'll have only a very
+        superficial understanding of how to use it.
 
-So if you're not familiar with FORTH or want to refresh your memory here are some online
-references to read:
+        So if you're not familiar with FORTH or want to refresh your memory here are some online
+        references to read:
 
-http://en.wikipedia.org/wiki/Forth_%28programming_language%29
+        http://en.wikipedia.org/wiki/Forth_%28programming_language%29
 
-http://galileo.phys.virginia.edu/classes/551.jvn.fall01/primer.htm
+        http://galileo.phys.virginia.edu/classes/551.jvn.fall01/primer.htm
 
-http://wiki.laptop.org/go/Forth_Lessons
+        http://wiki.laptop.org/go/Forth_Lessons
 
-http://www.albany.net/~hello/simple.htm
+        http://www.albany.net/~hello/simple.htm
 
-Here is another "Why FORTH?" essay: http://www.jwdt.com/~paysan/why-forth.html
+        Here is another "Why FORTH?" essay: http://www.jwdt.com/~paysan/why-forth.html
 
-Discussion and criticism of this FORTH here: http://lambda-the-ultimate.org/node/2452
+        Discussion and criticism of this FORTH here: http://lambda-the-ultimate.org/node/2452
 
-ACKNOWLEDGEMENTS ----------------------------------------------------------------------
+        ACKNOWLEDGEMENTS ----------------------------------------------------------------------
 
-This code draws heavily on the design of LINA FORTH (http://home.hccnet.nl/a.w.m.van.der.horst/lina.html)
-by Albert van der Horst.  Any similarities in the code are probably not accidental.
+        This code draws heavily on the design of LINA FORTH (http://home.hccnet.nl/a.w.m.van.der.horst/lina.html)
+        by Albert van der Horst.  Any similarities in the code are probably not accidental.
 
-Some parts of this FORTH are also based on this IOCCC entry from 1992:
-http://ftp.funet.fi/pub/doc/IOCCC/1992/buzzard.2.design.
-I was very proud when Sean Barrett, the original author of the IOCCC entry, commented in the LtU thread
-http://lambda-the-ultimate.org/node/2452#comment-36818 about this FORTH.
+        Some parts of this FORTH are also based on this IOCCC entry from 1992:
+        http://ftp.funet.fi/pub/doc/IOCCC/1992/buzzard.2.design.
+        I was very proud when Sean Barrett, the original author of the IOCCC entry, commented in the LtU thread
+        http://lambda-the-ultimate.org/node/2452#comment-36818 about this FORTH.
 
-And finally I'd like to acknowledge the (possibly forgotten?) authors of ARTIC FORTH because their
-original program which I still have on original cassette tape kept nagging away at me all these years.
-http://en.wikipedia.org/wiki/Artic_Software
+        And finally I'd like to acknowledge the (possibly forgotten?) authors of ARTIC FORTH because their
+        original program which I still have on original cassette tape kept nagging away at me all these years.
+        http://en.wikipedia.org/wiki/Artic_Software
 
-PUBLIC DOMAIN ----------------------------------------------------------------------
+        PUBLIC DOMAIN ----------------------------------------------------------------------
 
-I, the copyright holder of this work, hereby release it into the public domain. This applies worldwide.
+        I, the copyright holder of this work, hereby release it into the public domain. This applies worldwide.
 
-In case this is not legally possible, I grant any entity the right to use this work for any purpose,
-without any conditions, unless such conditions are required by law.
+        In case this is not legally possible, I grant any entity the right to use this work for any purpose,
+        without any conditions, unless such conditions are required by law.
 
-SETTING UP ----------------------------------------------------------------------
+        SETTING UP ----------------------------------------------------------------------
 
-Let's get a few housekeeping things out of the way.  Firstly because I need to draw lots of
-ASCII-art diagrams to explain concepts, the best way to look at this is using a window which
-uses a fixed width font and is at least this wide:
+        Let's get a few housekeeping things out of the way.  Firstly because I need to draw lots of
+        ASCII-art diagrams to explain concepts, the best way to look at this is using a window which
+        uses a fixed width font and is at least this wide:
 
- <------------------------------------------------------------------------------------------------------------------------>
+         <------------------------------------------------------------------------------------------------------------------------>
 
- I assume that your screen is at least 50 characters high.
+         I assume that your screen is at least 50 characters high.
 
-ASSEMBLING ----------------------------------------------------------------------
+        ASSEMBLING ----------------------------------------------------------------------
 
-If you want to actually run this FORTH, rather than just read it, you will need dot net core.  
+        If you want to actually run this FORTH, rather than just read it, you will need dot net core.  
 
-Again, to assemble this you will need dot net core installed.  The commands to
-assemble and run the code are:
+        Again, to assemble this you will need dot net core installed.  The commands to
+        assemble and run the code are:
 
-cat jonesforth.f - | dotnet run -p FsForth/FsForth.fsproj
+        cat jonesforth.f - | dotnet run -p FsForth/FsForth.fsproj
 
-If you want to run your own FORTH programs you can do:
-cat jonesforth.f myprog.f | dotnet run -p FsForth/FsForth.fsproj
+        If you want to run your own FORTH programs you can do:
+        cat jonesforth.f myprog.f | dotnet run -p FsForth/FsForth.fsproj
 
-If you want to load your own FORTH code and then continue reading user commands, you can do:
-cat jonesforth.f myfunctions.f - | dotnet run -p FsForth/FsForth.fsproj
+        If you want to load your own FORTH code and then continue reading user commands, you can do:
+        cat jonesforth.f myfunctions.f - | dotnet run -p FsForth/FsForth.fsproj
 
-THE DICTIONARY ----------------------------------------------------------------------
+        THE DICTIONARY ----------------------------------------------------------------------
 
-In FORTH as you will know, functions are called "words", and just as in other languages they
-have a name and a definition.  Here are two FORTH words:
+        In FORTH as you will know, functions are called "words", and just as in other languages they
+        have a name and a definition.  Here are two FORTH words:
 
-: DOUBLE DUP + ;                \ name is "DOUBLE", definition is "DUP +"
-: QUADRUPLE DOUBLE DOUBLE ;     \ name is "QUADRUPLE", definition is "DOUBLE DOUBLE"
+        : DOUBLE DUP + ;                \ name is "DOUBLE", definition is "DUP +"
+        : QUADRUPLE DOUBLE DOUBLE ;     \ name is "QUADRUPLE", definition is "DOUBLE DOUBLE"
 
-Words, both built-in ones and ones which the programmer defines later, are stored in a dictionary
-which is just a linked list of dictionary entries.
+        Words, both built-in ones and ones which the programmer defines later, are stored in a dictionary
+        which is just a linked list of dictionary entries.
 
-<--- DICTIONARY ENTRY (HEADER) ----------------------->
-+------------------------+--------+---------- - - - - +----------- - - - -
-| LINK POINTER           | LENGTH/| NAME              | DEFINITION
-|                        | FLAGS  |                   |
-+--- (4 bytes) ----------+- byte -+- n bytes  - - - - +----------- - - - -
+        <--- DICTIONARY ENTRY (HEADER) ----------------------->
+        +------------------------+--------+---------- - - - - +----------- - - - -
+        | LINK POINTER           | LENGTH/| NAME              | DEFINITION
+        |                        | FLAGS  |                   |
+        +--- (4 bytes) ----------+- byte -+- n bytes  - - - - +----------- - - - -
 
-I'll come to the definition of the word later.  For now just look at the header.  The first
-4 bytes are the link pointer.  This points back to the previous word in the dictionary, or, for
-the first word in the dictionary it is just a NULL pointer.  Then comes a length/flags byte.
-The length of the word can be up to 31 characters (5 bits used) and the top three bits are used
-for various flags which I'll come to later.  This is followed by the name itself, and in this
-implementation the name is rounded up to a multiple of 4 bytes by padding it with zero bytes.
-That's just to ensure that the definition starts on a 32 bit boundary.
+        I'll come to the definition of the word later.  For now just look at the header.  The first
+        4 bytes are the link pointer.  This points back to the previous word in the dictionary, or, for
+        the first word in the dictionary it is just a NULL pointer.  Then comes a length/flags byte.
+        The length of the word can be up to 31 characters (5 bits used) and the top three bits are used
+        for various flags which I'll come to later.  This is followed by the name itself, and in this
+        implementation the name is rounded up to a multiple of 4 bytes by padding it with zero bytes.
+        That's just to ensure that the definition starts on a 32 bit boundary.
 
-A FORTH variable called LATEST contains a pointer to the most recently defined word, in
-other words, the head of this linked list.
+        A FORTH variable called LATEST contains a pointer to the most recently defined word, in
+        other words, the head of this linked list.
 
-DOUBLE and QUADRUPLE might look like this:
+        DOUBLE and QUADRUPLE might look like this:
 
-  pointer to previous word
-   ^
-   |
-+--|------+---+---+---+---+---+---+---+---+------------- - - - -
-| LINK    | 6 | D | O | U | B | L | E | 0 | (definition ...)
-+---------+---+---+---+---+---+---+---+---+------------- - - - -
-   ^       len                         padding
-   |
-+--|------+---+---+---+---+---+---+---+---+---+---+---+---+------------- - - - -
-| LINK    | 9 | Q | U | A | D | R | U | P | L | E | 0 | 0 | (definition ...)
-+---------+---+---+---+---+---+---+---+---+---+---+---+---+------------- - - - -
-   ^       len                                     padding
-   |
-   |
-  LATEST
+          pointer to previous word
+           ^
+           |
+        +--|------+---+---+---+---+---+---+---+---+------------- - - - -
+        | LINK    | 6 | D | O | U | B | L | E | 0 | (definition ...)
+        +---------+---+---+---+---+---+---+---+---+------------- - - - -
+           ^       len                         padding
+           |
+        +--|------+---+---+---+---+---+---+---+---+---+---+---+---+------------- - - - -
+        | LINK    | 9 | Q | U | A | D | R | U | P | L | E | 0 | 0 | (definition ...)
+        +---------+---+---+---+---+---+---+---+---+---+---+---+---+------------- - - - -
+           ^       len                                     padding
+           |
+           |
+          LATEST
 
-You should be able to see from this how you might implement functions to find a word in
-the dictionary (just walk along the dictionary entries starting at LATEST and matching
-the names until you either find a match or hit the NULL pointer at the end of the dictionary);
-and add a word to the dictionary (create a new definition, set its LINK to LATEST, and set
-LATEST to point to the new word).  We'll see precisely these functions implemented in
-assembly code later on.
+        You should be able to see from this how you might implement functions to find a word in
+        the dictionary (just walk along the dictionary entries starting at LATEST and matching
+        the names until you either find a match or hit the NULL pointer at the end of the dictionary);
+        and add a word to the dictionary (create a new definition, set its LINK to LATEST, and set
+        LATEST to point to the new word).  We'll see precisely these functions implemented in
+        assembly code later on.
 
-One interesting consequence of using a linked list is that you can redefine words, and
-a newer definition of a word overrides an older one.  This is an important concept in
-FORTH because it means that any word (even "built-in" or "standard" words) can be
-overridden with a new definition, either to enhance it, to make it faster or even to
-disable it.  However because of the way that FORTH words get compiled, which you'll
-understand below, words defined using the old definition of a word continue to use
-the old definition.  Only words defined after the new definition use the new definition.
+        One interesting consequence of using a linked list is that you can redefine words, and
+        a newer definition of a word overrides an older one.  This is an important concept in
+        FORTH because it means that any word (even "built-in" or "standard" words) can be
+        overridden with a new definition, either to enhance it, to make it faster or even to
+        disable it.  However because of the way that FORTH words get compiled, which you'll
+        understand below, words defined using the old definition of a word continue to use
+        the old definition.  Only words defined after the new definition use the new definition.
 
-DIRECT THREADED CODE ----------------------------------------------------------------------
+        DIRECT THREADED CODE ----------------------------------------------------------------------
 
-Now we'll get to the really crucial bit in understanding FORTH, so go and get a cup of tea
-or coffee and settle down.  It's fair to say that if you don't understand this section, then you
-won't "get" how FORTH works, and that would be a failure on my part for not explaining it well.
-So if after reading this section a few times you don't understand it, please email me
-(rich@annexia.org).
+        Now we'll get to the really crucial bit in understanding FORTH, so go and get a cup of tea
+        or coffee and settle down.  It's fair to say that if you don't understand this section, then you
+        won't "get" how FORTH works, and that would be a failure on my part for not explaining it well.
+        So if after reading this section a few times you don't understand it, please email me
+        (rich@annexia.org).
 
-Let's talk first about what "threaded code" means.  Imagine a peculiar version of C where
-you are only allowed to call functions without arguments.  (Don't worry for now that such a
-language would be completely useless!)  So in our peculiar C, code would look like this:
+        Let's talk first about what "threaded code" means.  Imagine a peculiar version of C where
+        you are only allowed to call functions without arguments.  (Don't worry for now that such a
+        language would be completely useless!)  So in our peculiar C, code would look like this:
 
-f ()
-{
-  a ();
-  b ();
-  c ();
-}
+        f ()
+        {
+          a ();
+          b ();
+          c ();
+        }
 
-and so on.  How would a function, say 'f' above, be compiled by a standard C compiler?
-Probably into assembly code like this.  On the right hand side I've written the actual
-i386 machine code.
+        and so on.  How would a function, say 'f' above, be compiled by a standard C compiler?
+        Probably into assembly code like this.  On the right hand side I've written the actual
+        i386 machine code.
 
-f:
-  CALL a                        E8 08 00 00 00
-  CALL b                        E8 1C 00 00 00
-  CALL c                        E8 2C 00 00 00
-  ; ignore the return from the function for now
+        f:
+          CALL a                        E8 08 00 00 00
+          CALL b                        E8 1C 00 00 00
+          CALL c                        E8 2C 00 00 00
+          ; ignore the return from the function for now
 
-"E8" is the x86 machine code to "CALL" a function.  In the first 20 years of computing
-memory was hideously expensive and we might have worried about the wasted space being used
-by the repeated "E8" bytes.  We can save 20% in code size (and therefore, in expensive memory)
-by compressing this into just:
+        "E8" is the x86 machine code to "CALL" a function.  In the first 20 years of computing
+        memory was hideously expensive and we might have worried about the wasted space being used
+        by the repeated "E8" bytes.  We can save 20% in code size (and therefore, in expensive memory)
+        by compressing this into just:
 
-08 00 00 00             Just the function addresses, without
-1C 00 00 00             the CALL prefix.
-2C 00 00 00
-
-On a 16-bit machine like the ones which originally ran FORTH the savings are even greater - 33%.
-
-[Historical note: If the execution model that FORTH uses looks strange from the following
-paragraphs, then it was motivated entirely by the need to save memory on early computers.
-This code compression isn't so important now when our machines have more memory in their L1
-caches than those early computers had in total, but the execution model still has some
-useful properties].
-
-Of course this code won't run directly on the CPU any more.  Instead we need to write an
-interpreter which takes each set of bytes and calls it.
-
-On an i386 machine it turns out that we can write this interpreter rather easily, in just
-two assembly instructions which turn into just 3 bytes of machine code.  Let's store the
-pointer to the next word to execute in the %esi register:
-
-        08 00 00 00     <- We're executing this one now.  %esi is the _next_ one to execute.
-%esi -> 1C 00 00 00
+        08 00 00 00             Just the function addresses, without
+        1C 00 00 00             the CALL prefix.
         2C 00 00 00
 
-The all-important i386 instruction is called LODSL (or in Intel manuals, LODSW).  It does
-two things.  Firstly it reads the memory at %esi into the accumulator (%eax).  Secondly it
-increments %esi by 4 bytes.  So after LODSL, the situation now looks like this:
+        On a 16-bit machine like the ones which originally ran FORTH the savings are even greater - 33%.
 
-        08 00 00 00     <- We're still executing this one
-        1C 00 00 00     <- %eax now contains this address (0x0000001C)
-%esi -> 2C 00 00 00
+        [Historical note: If the execution model that FORTH uses looks strange from the following
+        paragraphs, then it was motivated entirely by the need to save memory on early computers.
+        This code compression isn't so important now when our machines have more memory in their L1
+        caches than those early computers had in total, but the execution model still has some
+        useful properties].
 
-Now we just need to jump to the address in %eax.  This is again just a single x86 instruction
-written JMP *(%eax).  And after doing the jump, the situation looks like:
+        Of course this code won't run directly on the CPU any more.  Instead we need to write an
+        interpreter which takes each set of bytes and calls it.
 
-        08 00 00 00
-        1C 00 00 00     <- Now we're executing this subroutine.
-%esi -> 2C 00 00 00
+        On an i386 machine it turns out that we can write this interpreter rather easily, in just
+        two assembly instructions which turn into just 3 bytes of machine code.  Let's store the
+        pointer to the next word to execute in the %esi register:
 
-To make this work, each subroutine is followed by the two instructions 'LODSL; JMP *(%eax)'
-which literally make the jump to the next subroutine.
+                08 00 00 00     <- We're executing this one now.  %esi is the _next_ one to execute.
+        %esi -> 1C 00 00 00
+                2C 00 00 00
 
-And that brings us to our first piece of actual code!  Well, it's a macro.
+        The all-important i386 instruction is called LODSL (or in Intel manuals, LODSW).  It does
+        two things.  Firstly it reads the memory at %esi into the accumulator (%eax).  Secondly it
+        increments %esi by 4 bytes.  So after LODSL, the situation now looks like this:
+
+                08 00 00 00     <- We're still executing this one
+                1C 00 00 00     <- %eax now contains this address (0x0000001C)
+        %esi -> 2C 00 00 00
+
+        Now we just need to jump to the address in %eax.  This is again just a single x86 instruction
+        written JMP *(%eax).  And after doing the jump, the situation looks like:
+
+                08 00 00 00
+                1C 00 00 00     <- Now we're executing this subroutine.
+        %esi -> 2C 00 00 00
+
+        To make this work, each subroutine is followed by the two instructions 'LODSL; JMP *(%eax)'
+        which literally make the jump to the next subroutine.
+
+        And that brings us to our first piece of actual code!  Well, it's a macro.
 *)
 module Forth =
     let JONES_VERSION = 47
@@ -461,61 +462,6 @@ module Forth =
             vm.IP <- vm.IP + Memory.baseSize
             next
         )
-(*
-Just to make this absolutely clear, let's see how DOCOL works when jumping from QUADRUPLE
-into DOUBLE:
-
-        QUADRUPLE:
-        +------------------+
-        | codeword         |
-        +------------------+               DOUBLE:
-        | addr of DOUBLE  ---------------> +------------------+
-        +------------------+       %eax -> | addr of DOCOL    |
-%esi -> | addr of DOUBLE   |               +------------------+
-        +------------------+               | addr of DUP      |
-        | addr of EXIT     |               +------------------+
-        +------------------+               | etc.             |
-
-First, the call to DOUBLE calls DOCOL (the codeword of DOUBLE).  DOCOL does this:  It
-pushes the old %esi on the return stack.  %eax points to the codeword of DOUBLE, so we
-just add 4 on to it to get our new %esi:
-
-        QUADRUPLE:
-        +------------------+
-        | codeword         |
-        +------------------+               DOUBLE:
-        | addr of DOUBLE  ---------------> +------------------+
-top of return   +------------------+       %eax -> | addr of DOCOL    |
-stack points -> | addr of DOUBLE   |       + 4 =   +------------------+
-        +------------------+       %esi -> | addr of DUP      |
-        | addr of EXIT     |               +------------------+
-        +------------------+               | etc.             |
-
-Then we do NEXT, and because of the magic of threaded code that increments %esi again
-and calls DUP.
-
-Well, it seems to work.
-
-One minor point here.  Because DOCOL is the first bit of assembly actually to be defined
-in this file (the others were just macros), and because I usually compile this code with the
-text segment starting at address 0, DOCOL has address 0.  So if you are disassembling the
-code and see a word with a codeword of 0, you will immediately know that the word is
-written in FORTH (it's not an assembler primitive) and so uses DOCOL as the interpreter.
-
-STARTING UP ----------------------------------------------------------------------
-
-Now let's get down to nuts and bolts.  When we start the program we need to set up
-a few things like the return stack.  But as soon as we can, we want to jump into FORTH
-code (albeit much of the "early" FORTH code will still need to be written as
-assembly language primitives).
-
-This is what the set up code does.  Does a tiny bit of house-keeping, sets up the
-separate return stack (NB: Linux gives us the ordinary parameter stack already), then
-immediately jumps to a FORTH word called QUIT.  Despite its name, QUIT doesn't quit
-anything.  It resets some internal state and starts reading and interpreting commands.
-(The reason it is called QUIT is because you can call QUIT from your own FORTH code
-to "quit" your program and go back to interpreting).
-*)
         //alternative names: unnest
         let exit = code.addFunction ( fun (vm:ForthVM) ->
             vm.IP <- vm.RSP.pop() 
@@ -527,45 +473,101 @@ to "quit" your program and go back to interpreting).
             EXIT = exit
         }
 (*
-BUILT-IN WORDS ----------------------------------------------------------------------
+        Just to make this absolutely clear, let's see how DOCOL works when jumping from QUADRUPLE
+        into DOUBLE:
 
-Remember our dictionary entries (headers)?  Let's bring those together with the codeword
-and data words to see how : DOUBLE DUP + ; really looks in memory.
+                QUADRUPLE:
+                +------------------+
+                | codeword         |
+                +------------------+               DOUBLE:
+                | addr of DOUBLE  ---------------> +------------------+
+                +------------------+       %eax -> | addr of DOCOL    |
+        %esi -> | addr of DOUBLE   |               +------------------+
+                +------------------+               | addr of DUP      |
+                | addr of EXIT     |               +------------------+
+                +------------------+               | etc.             |
 
-  pointer to previous word
-   ^
-   |
-+--|------+---+---+---+---+---+---+---+---+------------+------------+------------+------------+
-| LINK    | 6 | D | O | U | B | L | E | 0 | DOCOL      | DUP        | +          | EXIT       |
-+---------+---+---+---+---+---+---+---+---+------------+--|---------+------------+------------+
-   ^       len                         pad  codeword      |
-   |                                                      V
-  LINK in next word                             points to codeword of DUP
+        First, the call to DOUBLE calls DOCOL (the codeword of DOUBLE).  DOCOL does this:  It
+        pushes the old %esi on the return stack.  %eax points to the codeword of DOUBLE, so we
+        just add 4 on to it to get our new %esi:
 
-Initially we can't just write ": DOUBLE DUP + ;" (ie. that literal string) here because we
-don't yet have anything to read the string, break it up at spaces, parse each word, etc. etc.
-So instead we will have to define built-in words using the GNU assembler data constructors
-(like .int, .byte, .string, .ascii and so on -- look them up in the gas info page if you are
-unsure of them).
+                QUADRUPLE:
+                +------------------+
+                | codeword         |
+                +------------------+               DOUBLE:
+                | addr of DOUBLE  ---------------> +------------------+
+        top of return   +------------------+       %eax -> | addr of DOCOL    |
+        stack points -> | addr of DOUBLE   |       + 4 =   +------------------+
+                +------------------+       %esi -> | addr of DUP      |
+                | addr of EXIT     |               +------------------+
+                +------------------+               | etc.             |
 
-The long way would be:
+        Then we do NEXT, and because of the magic of threaded code that increments %esi again
+        and calls DUP.
 
-.int <link to previous word>
-.byte 6                 // len
-.ascii "DOUBLE"         // string
-.byte 0                 // padding
-DOUBLE: .int DOCOL              // codeword
-.int DUP                // pointer to codeword of DUP
-.int PLUS               // pointer to codeword of +
-.int EXIT               // pointer to codeword of EXIT
+        Well, it seems to work.
 
-That's going to get quite tedious rather quickly, so here I define an assembler macro
-so that I can just write:
+        One minor point here.  Because DOCOL is the first bit of assembly actually to be defined
+        in this file (the others were just macros), and because I usually compile this code with the
+        text segment starting at address 0, DOCOL has address 0.  So if you are disassembling the
+        code and see a word with a codeword of 0, you will immediately know that the word is
+        written in FORTH (it's not an assembler primitive) and so uses DOCOL as the interpreter.
 
-defword "DOUBLE",6,,DOUBLE
-.int DUP,PLUS,EXIT
+        STARTING UP ----------------------------------------------------------------------
 
-and I'll get exactly the same effect.
+        Now let's get down to nuts and bolts.  When we start the program we need to set up
+        a few things like the return stack.  But as soon as we can, we want to jump into FORTH
+        code (albeit much of the "early" FORTH code will still need to be written as
+        assembly language primitives).
+
+        This is what the set up code does.  Does a tiny bit of house-keeping, sets up the
+        separate return stack (NB: Linux gives us the ordinary parameter stack already), then
+        immediately jumps to a FORTH word called QUIT.  Despite its name, QUIT doesn't quit
+        anything.  It resets some internal state and starts reading and interpreting commands.
+        (The reason it is called QUIT is because you can call QUIT from your own FORTH code
+        to "quit" your program and go back to interpreting).
+        *)
+
+        (*
+        BUILT-IN WORDS ----------------------------------------------------------------------
+
+        Remember our dictionary entries (headers)?  Let's bring those together with the codeword
+        and data words to see how : DOUBLE DUP + ; really looks in memory.
+
+          pointer to previous word
+           ^
+           |
+        +--|------+---+---+---+---+---+---+---+---+------------+------------+------------+------------+
+        | LINK    | 6 | D | O | U | B | L | E | 0 | DOCOL      | DUP        | +          | EXIT       |
+        +---------+---+---+---+---+---+---+---+---+------------+--|---------+------------+------------+
+           ^       len                         pad  codeword      |
+           |                                                      V
+          LINK in next word                             points to codeword of DUP
+
+        Initially we can't just write ": DOUBLE DUP + ;" (ie. that literal string) here because we
+        don't yet have anything to read the string, break it up at spaces, parse each word, etc. etc.
+        So instead we will have to define built-in words using the GNU assembler data constructors
+        (like .int, .byte, .string, .ascii and so on -- look them up in the gas info page if you are
+        unsure of them).
+
+        The long way would be:
+
+        .int <link to previous word>
+        .byte 6                 // len
+        .ascii "DOUBLE"         // string
+        .byte 0                 // padding
+        DOUBLE: .int DOCOL              // codeword
+        .int DUP                // pointer to codeword of DUP
+        .int PLUS               // pointer to codeword of +
+        .int EXIT               // pointer to codeword of EXIT
+
+        That's going to get quite tedious rather quickly, so here I define an assembler macro
+        so that I can just write:
+
+        defword "DOUBLE",6,,DOUBLE
+        .int DUP,PLUS,EXIT
+
+        and I'll get exactly the same effect.
 
 *)
 (* Flags - these are discussed later. *)
@@ -598,7 +600,7 @@ and I'll get exactly the same effect.
             vm.NEXT.value <- baseWords.NEXT
             vm.DOCOL.value <- baseWords.DOCOL
             vm.EXIT.value <- baseWords.EXIT
-
+        //place where we need to put QUIT word after creation
         member x.setEntryPoint codeword = vm.EntryPoint.value <- codeword
         
         member x.PredefinedWords = baseWords
@@ -633,26 +635,26 @@ and I'll get exactly the same effect.
         member x.defword (name: string) (flags:Flags) (program:Int32[]) = 
             x.writeCodewordAndPayload name flags baseWords.DOCOL program // codeword - the interpreter
 (*
-Similarly I want a way to write words written in assembly language.  There will quite a few
-of these to start with because, well, everything has to start in assembly before there's
-enough "infrastructure" to be able to start writing FORTH words, but also I want to define
-some common FORTH words in assembly language for speed, even though I could write them in FORTH.
+        Similarly I want a way to write words written in assembly language.  There will quite a few
+        of these to start with because, well, everything has to start in assembly before there's
+        enough "infrastructure" to be able to start writing FORTH words, but also I want to define
+        some common FORTH words in assembly language for speed, even though I could write them in FORTH.
 
-This is what DUP looks like in memory:
+        This is what DUP looks like in memory:
 
-  pointer to previous word
-   ^
-   |
-+--|------+---+---+---+---+------------+
-| LINK    | 3 | D | U | P | code_DUP ---------------------> points to the assembly
-+---------+---+---+---+---+------------+                    code used to write DUP,
-   ^       len              codeword                        which ends with NEXT.
-   |
-  LINK in next word
+          pointer to previous word
+           ^
+           |
+        +--|------+---+---+---+---+------------+
+        | LINK    | 3 | D | U | P | code_DUP ---------------------> points to the assembly
+        +---------+---+---+---+---+------------+                    code used to write DUP,
+           ^       len              codeword                        which ends with NEXT.
+           |
+          LINK in next word
 
-Again, for brevity in writing the header I'm going to write an assembler macro called defcode.
-As with defword above, don't worry about the complicated details of the macro.
-*)
+        Again, for brevity in writing the header I'm going to write an assembler macro called defcode.
+        As with defword above, don't worry about the complicated details of the macro.
+        *)
         member x.defcode (name: string) (flags:Flags) (f:Fn) = 
             let fAddr = vm.CodeMemory.addFunction f
             x.writeCodewordAndPayload name flags fAddr Array.empty
@@ -678,9 +680,9 @@ As with defword above, don't worry about the complicated details of the macro.
         let words = x.PredefinedWords
         let codewords = x.IndirectPredefinedWords 
 (*
-Now some easy FORTH primitives.  These are written in assembly for speed.  If you understand
-i386 assembly language then it is worth reading these.  However if you don't understand assembly
-you can skip the details.
+        Now some easy FORTH primitives.  These are written in assembly for speed.  If you understand
+        i386 assembly language then it is worth reading these.  However if you don't understand assembly
+        you can skip the details.
 *)
 
 
@@ -781,9 +783,9 @@ you can skip the details.
         let SUB = def apply2 "-" <| flip (-)// get top of stack and subtract it from next word on stack
         let MUL = def apply2 "*" <| (*)
 (*
-In this FORTH, only /MOD is primitive.  Later we will define the / and MOD words in
-terms of the primitive /MOD.  The design of the i386 assembly instruction idiv which
-leaves both quotient and remainder makes this the obvious choice.
+        In this FORTH, only /MOD is primitive.  Later we will define the / and MOD words in
+        terms of the primitive /MOD.  The design of the i386 assembly instruction idiv which
+        leaves both quotient and remainder makes this the obvious choice.
 *)
         //( n1 n2 -- n3 n4 ) Divide n1 by n2, giving the single-cell remainder n3 and the single-cell quotient n4
         let DIVMOD = x.defcode "/MOD" Flags.NONE (fun vm -> 
@@ -796,12 +798,12 @@ leaves both quotient and remainder makes this the obvious choice.
         ) 
 
 (*
-Lots of comparison operations like =, <, >, etc..
+        Lots of comparison operations like =, <, >, etc..
 
-ANS FORTH says that the comparison words should return all (binary) 1's for
-TRUE and all 0's for FALSE.  However this is a bit of a strange convention
-so this FORTH breaks it and returns the more normal (for C programmers ...)
-1 meaning TRUE and 0 meaning FALSE.
+        ANS FORTH says that the comparison words should return all (binary) 1's for
+        TRUE and all 0's for FALSE.  However this is a bit of a strange convention
+        so this FORTH breaks it and returns the more normal (for C programmers ...)
+        1 meaning TRUE and 0 meaning FALSE.
 *)
 
         //n1 n2 – f  
@@ -903,11 +905,11 @@ so this FORTH breaks it and returns the more normal (for C programmers ...)
             words.NEXT
         )
 (*
-MEMORY ----------------------------------------------------------------------
+        MEMORY ----------------------------------------------------------------------
 
-As important point about FORTH is that it gives you direct access to the lowest levels
-of the machine.  Manipulating memory directly is done frequently in FORTH, and these are
-the primitive words for doing it.
+        As important point about FORTH is that it gives you direct access to the lowest levels
+        of the machine.  Manipulating memory directly is done frequently in FORTH, and these are
+        the primitive words for doing it.
 *)
         let STORE = x.defcode "!" Flags.NONE (fun vm -> 
             let address = vm.SP.pop()
@@ -934,10 +936,10 @@ the primitive words for doing it.
             words.NEXT 
         )
 (*
-! and @ (STORE and FETCH) store 32-bit words.  It's also useful to be able to read and write bytes
-so we also define standard words C@ and C!.
+        ! and @ (STORE and FETCH) store 32-bit words.  It's also useful to be able to read and write bytes
+        so we also define standard words C@ and C!.
 
-Byte-oriented operations only work on architectures which permit them (i386 is one of those).
+        Byte-oriented operations only work on architectures which permit them (i386 is one of those).
  *)
         let STOREBYTE = x.defcode "C!" Flags.NONE (fun vm -> 
             let address = vm.SP.pop()
@@ -987,13 +989,13 @@ Byte-oriented operations only work on architectures which permit them (i386 is o
         defcode above.  (In fact the defvar macro uses defcode to do the dictionary header).
 *)
 (*
-The built-in variables are:
+        The built-in variables are:
 
-STATE           Is the interpreter executing code (0) or compiling a word (non-zero)?
-LATEST          Points to the latest (most recently defined) word in the dictionary.
-HERE            Points to the next free byte of memory.  When compiling, compiled words go here.
+        STATE           Is the interpreter executing code (0) or compiling a word (non-zero)?
+        LATEST          Points to the latest (most recently defined) word in the dictionary.
+        HERE            Points to the next free byte of memory.  When compiling, compiled words go here.
 
-BASE            The current base for printing and reading numbers.
+        BASE            The current base for printing and reading numbers.
 
 *)
       
@@ -1002,20 +1004,20 @@ BASE            The current base for printing and reading numbers.
         let LATEST = x.defvar "LATEST" Flags.NONE (fun vm -> vm.LATEST.address) Option.None //name_SYSCALL0 // SYSCALL0 must be last in built-in dictionary
         let BASE = x.defvar "BASE" Flags.NONE (fun vm -> vm.BASE.address) Option.None
 (*
-BUILT-IN CONSTANTS ----------------------------------------------------------------------
+        BUILT-IN CONSTANTS ----------------------------------------------------------------------
 
-It's also useful to expose a few constants to FORTH.  When the word is executed it pushes a
-constant value on the stack.
+        It's also useful to expose a few constants to FORTH.  When the word is executed it pushes a
+        constant value on the stack.
 
-The built-in constants are:
+        The built-in constants are:
 
-VERSION         Is the current version of this FORTH.
-S0              Stores the address of the top of the parameter stack.
-R0              The address of the top of the return stack.
-DOCOL           Pointer to DOCOL.
-F_IMMED         The IMMEDIATE flag's actual value.
-F_HIDDEN        The HIDDEN flag's actual value.
-F_LENMASK       The length mask in the flags/len byte.
+        VERSION         Is the current version of this FORTH.
+        S0              Stores the address of the top of the parameter stack.
+        R0              The address of the top of the return stack.
+        DOCOL           Pointer to DOCOL.
+        F_IMMED         The IMMEDIATE flag's actual value.
+        F_HIDDEN        The HIDDEN flag's actual value.
+        F_LENMASK       The length mask in the flags/len byte.
 *)
         let SZ = x.defconst "S0" Flags.NONE (fun vm -> vm.SP.S0)
         let VERSION = x.defconst "VERSION" Flags.NONE (fun vm -> JONES_VERSION)
@@ -1025,10 +1027,10 @@ F_LENMASK       The length mask in the flags/len byte.
         let __F_HIDDEN = x.defconst "F_HIDDEN" Flags.NONE (fun vm ->  int Flags.HIDDEN)
         let __F_LENMASK = x.defconst "F_LENMASK" Flags.NONE (fun vm -> LENMASK)
 (*
-RETURN STACK ----------------------------------------------------------------------
+        RETURN STACK ----------------------------------------------------------------------
 
-These words allow you to access the return stack.  Recall that the register %ebp always points to
-the top of the return stack.
+        These words allow you to access the return stack.  Recall that the register %ebp always points to
+        the top of the return stack.
 *)
         let TOR = x.defcode ">R" Flags.NONE (fun vm -> 
             vm.SP.pop() |> vm.RSP.push
@@ -1053,10 +1055,10 @@ the top of the return stack.
             words.NEXT 
         )
 (*
-PARAMETER (DATA) STACK ----------------------------------------------------------------------
+        PARAMETER (DATA) STACK ----------------------------------------------------------------------
 
-These functions allow you to manipulate the parameter stack.  Recall that Linux sets up the parameter
-stack for us, and it is accessed through %esp.
+        These functions allow you to manipulate the parameter stack.  Recall that Linux sets up the parameter
+        stack for us, and it is accessed through %esp.
 *)
         let DSPFETCH = x.defcode "DSP@" Flags.NONE (fun vm -> 
             vm.SP.push vm.SP.top
@@ -1068,82 +1070,82 @@ stack for us, and it is accessed through %esp.
             words.NEXT 
         )
 (*
-INPUT AND OUTPUT ----------------------------------------------------------------------
+        INPUT AND OUTPUT ----------------------------------------------------------------------
 
-These are our first really meaty/complicated FORTH primitives.  I have chosen to write them in
-assembler, but surprisingly in "real" FORTH implementations these are often written in terms
-of more fundamental FORTH primitives.  I chose to avoid that because I think that just obscures
-the implementation.  After all, you may not understand assembler but you can just think of it
-as an opaque block of code that does what it says.
+        These are our first really meaty/complicated FORTH primitives.  I have chosen to write them in
+        assembler, but surprisingly in "real" FORTH implementations these are often written in terms
+        of more fundamental FORTH primitives.  I chose to avoid that because I think that just obscures
+        the implementation.  After all, you may not understand assembler but you can just think of it
+        as an opaque block of code that does what it says.
 
-Let's discuss input first.
+        Let's discuss input first.
 
-The FORTH word KEY reads the next byte from stdin (and pushes it on the parameter stack).
-So if KEY is called and someone hits the space key, then the number 32 (ASCII code of space)
-is pushed on the stack.
+        The FORTH word KEY reads the next byte from stdin (and pushes it on the parameter stack).
+        So if KEY is called and someone hits the space key, then the number 32 (ASCII code of space)
+        is pushed on the stack.
 
-In FORTH there is no distinction between reading code and reading input.  We might be reading
-and compiling code, we might be reading words to execute, we might be asking for the user
-to type their name -- ultimately it all comes in through KEY.
+        In FORTH there is no distinction between reading code and reading input.  We might be reading
+        and compiling code, we might be reading words to execute, we might be asking for the user
+        to type their name -- ultimately it all comes in through KEY.
 
-The implementation of KEY uses an input buffer of a certain size (defined at the end of this
-file).  It calls the Linux read(2) system call to fill this buffer and tracks its position
-in the buffer using a couple of variables, and if it runs out of input buffer then it refills
-it automatically.  The other thing that KEY does is if it detects that stdin has closed, it
-exits the program, which is why when you hit ^D the FORTH system cleanly exits.
+        The implementation of KEY uses an input buffer of a certain size (defined at the end of this
+        file).  It calls the Linux read(2) system call to fill this buffer and tracks its position
+        in the buffer using a couple of variables, and if it runs out of input buffer then it refills
+        it automatically.  The other thing that KEY does is if it detects that stdin has closed, it
+        exits the program, which is why when you hit ^D the FORTH system cleanly exits.
 
-     buffer                           bufftop
-|                                |
-V                                V
-+-------------------------------+--------------------------------------+
-| INPUT READ FROM STDIN ....... | unused part of the buffer            |
-+-------------------------------+--------------------------------------+
-                  ^
-                  |
-               currkey (next character to read)
+             buffer                           bufftop
+        |                                |
+        V                                V
+        +-------------------------------+--------------------------------------+
+        | INPUT READ FROM STDIN ....... | unused part of the buffer            |
+        +-------------------------------+--------------------------------------+
+                          ^
+                          |
+                       currkey (next character to read)
 
-<---------------------- BUFFER_SIZE (4096 bytes) ---------------------->
+        <---------------------- BUFFER_SIZE (4096 bytes) ---------------------->
 *)
         let KEY = x.defcode "KEY" Flags.NONE (fun vm -> 
             vm.input_buffer.get() |> int |> vm.SP.push// push return value on stack
             words.NEXT 
         )
 (*
-By contrast, output is much simpler.  The FORTH word EMIT writes out a single byte to stdout.
-This implementation just uses the write system call.  No attempt is made to buffer output, but
-it would be a good exercise to add it.
+        By contrast, output is much simpler.  The FORTH word EMIT writes out a single byte to stdout.
+        This implementation just uses the write system call.  No attempt is made to buffer output, but
+        it would be a good exercise to add it.
 *)
         let EMIT = x.defcode "EMIT" Flags.NONE (fun vm -> 
             vm.SP.pop() |> byte |> vm.out_buffer.set
             words.NEXT 
         )
 (*
-Back to input, WORD is a FORTH word which reads the next full word of input.
+        Back to input, WORD is a FORTH word which reads the next full word of input.
 
-What it does in detail is that it first skips any blanks (spaces, tabs, newlines and so on).
-Then it calls KEY to read characters into an internal buffer until it hits a blank.  Then it
-calculates the length of the word it read and returns the address and the length as
-two words on the stack (with the length at the top of stack).
+        What it does in detail is that it first skips any blanks (spaces, tabs, newlines and so on).
+        Then it calls KEY to read characters into an internal buffer until it hits a blank.  Then it
+        calculates the length of the word it read and returns the address and the length as
+        two words on the stack (with the length at the top of stack).
 
-Notice that WORD has a single internal buffer which it overwrites each time (rather like
-a static C string).  Also notice that WORD's internal buffer is just 32 bytes long and
-there is NO checking for overflow.  31 bytes happens to be the maximum length of a
-FORTH word that we support, and that is what WORD is used for: to read FORTH words when
-we are compiling and executing code.  The returned strings are not NUL-terminated.
+        Notice that WORD has a single internal buffer which it overwrites each time (rather like
+        a static C string).  Also notice that WORD's internal buffer is just 32 bytes long and
+        there is NO checking for overflow.  31 bytes happens to be the maximum length of a
+        FORTH word that we support, and that is what WORD is used for: to read FORTH words when
+        we are compiling and executing code.  The returned strings are not NUL-terminated.
 
-Start address+length is the normal way to represent strings in FORTH (not ending in an
-ASCII NUL character as in C), and so FORTH strings can contain any character including NULs
-and can be any length.
+        Start address+length is the normal way to represent strings in FORTH (not ending in an
+        ASCII NUL character as in C), and so FORTH strings can contain any character including NULs
+        and can be any length.
 
-WORD is not suitable for just reading strings (eg. user input) because of all the above
-peculiarities and limitations.
+        WORD is not suitable for just reading strings (eg. user input) because of all the above
+        peculiarities and limitations.
 
-Note that when executing, you'll see:
-WORD FOO
-which puts "FOO" and length 3 on the stack, but when compiling:
-: BAR WORD FOO ;
-is an error (or at least it doesn't do what you might expect).  Later we'll talk about compiling
-and immediate mode, and you'll understand why.
+        Note that when executing, you'll see:
+        WORD FOO
+        which puts "FOO" and length 3 on the stack, but when compiling:
+        : BAR WORD FOO ;
+        is an error (or at least it doesn't do what you might expect).  Later we'll talk about compiling
+        and immediate mode, and you'll understand why.
 *)
         let rec readWord vm mode : Memory.Span =
             let c = vm.input_buffer.get() 
@@ -1167,20 +1169,20 @@ and immediate mode, and you'll understand why.
             words.NEXT 
         )
 (*
-As well as reading in words we'll need to read in numbers and for that we are using a function
-called NUMBER.  This parses a numeric string such as one returned by WORD and pushes the
-number on the parameter stack.
+        As well as reading in words we'll need to read in numbers and for that we are using a function
+        called NUMBER.  This parses a numeric string such as one returned by WORD and pushes the
+        number on the parameter stack.
 
-The function uses the variable BASE as the base (radix) for conversion, so for example if
-BASE is 2 then we expect a binary number.  Normally BASE is 10.
+        The function uses the variable BASE as the base (radix) for conversion, so for example if
+        BASE is 2 then we expect a binary number.  Normally BASE is 10.
 
-If the word starts with a '-' character then the returned value is negative.
+        If the word starts with a '-' character then the returned value is negative.
 
-If the string can't be parsed as a number (or contains characters outside the current BASE)
-then we need to return an error indication.  So NUMBER actually returns two items on the stack.
-At the top of stack we return the number of unconverted characters (ie. if 0 then all characters
-were converted, so there is no error).  Second from top of stack is the parsed number or a
-partial value if there was an error.
+        If the string can't be parsed as a number (or contains characters outside the current BASE)
+        then we need to return an error indication.  So NUMBER actually returns two items on the stack.
+        At the top of stack we return the number of unconverted characters (ie. if 0 then all characters
+        were converted, so there is no error).  Second from top of stack is the parsed number or a
+        partial value if there was an error.
 *)
         let _NUMBER vm (str:Memory.Span) = 
             let radix = vm.BASE.value
@@ -1606,25 +1608,25 @@ partial value if there was an error.
 
         let IMMEDIATE = x.defcode "IMMEDIATE" Flags.IMMEDIATE immediate
 (*
-'addr HIDDEN' toggles the hidden flag (F_HIDDEN) of the word defined at addr.  To hide the
-most recently defined word (used above in : and ; definitions) you would do:
+        'addr HIDDEN' toggles the hidden flag (F_HIDDEN) of the word defined at addr.  To hide the
+        most recently defined word (used above in : and ; definitions) you would do:
 
-        LATEST @ HIDDEN
+                LATEST @ HIDDEN
 
-'HIDE word' toggles the flag on a named 'word'.
+        'HIDE word' toggles the flag on a named 'word'.
 
-Setting this flag stops the word from being found by FIND, and so can be used to make 'private'
-words.  For example, to break up a large word into smaller parts you might do:
+        Setting this flag stops the word from being found by FIND, and so can be used to make 'private'
+        words.  For example, to break up a large word into smaller parts you might do:
 
-        : SUB1 ... subword ... ;
-        : SUB2 ... subword ... ;
-        : SUB3 ... subword ... ;
-        : MAIN ... defined in terms of SUB1, SUB2, SUB3 ... ;
-        HIDE SUB1
-        HIDE SUB2
-        HIDE SUB3
+                : SUB1 ... subword ... ;
+                : SUB2 ... subword ... ;
+                : SUB3 ... subword ... ;
+                : MAIN ... defined in terms of SUB1, SUB2, SUB3 ... ;
+                HIDE SUB1
+                HIDE SUB2
+                HIDE SUB3
 
-After this, only MAIN is 'exported' or seen by the rest of the program.
+        After this, only MAIN is 'exported' or seen by the rest of the program.
 *)
         let hidden (vm:ForthVM) = 
             let addr = vm.SP.pop()
@@ -1632,8 +1634,8 @@ After this, only MAIN is 'exported' or seen by the rest of the program.
 
         let HIDDEN = x.defcode "HIDDEN" Flags.IMMEDIATE hidden
 (*
-Now we can define : (COLON) using CREATE.  It just calls CREATE, appends DOCOL (the codeword), sets
-the word HIDDEN and goes into compile mode.
+        Now we can define : (COLON) using CREATE.  It just calls CREATE, appends DOCOL (the codeword), sets
+        the word HIDDEN and goes into compile mode.
 *)
         let COLON = x.defword ":" Flags.NONE 
                         [|
@@ -1765,16 +1767,16 @@ the word HIDDEN and goes into compile mode.
         )
 
 (*
-QUIT AND INTERPRET ----------------------------------------------------------------------
+        QUIT AND INTERPRET ----------------------------------------------------------------------
 
-QUIT is the first FORTH function called, almost immediately after the FORTH system "boots".
-As explained before, QUIT doesn't "quit" anything.  It does some initialisation (in particular
-it clears the return stack) and it calls INTERPRET in a loop to interpret commands.  The
-reason it is called QUIT is because you can call it from your own FORTH words in order to
-"quit" your program and start again at the user prompt.
+        QUIT is the first FORTH function called, almost immediately after the FORTH system "boots".
+        As explained before, QUIT doesn't "quit" anything.  It does some initialisation (in particular
+        it clears the return stack) and it calls INTERPRET in a loop to interpret commands.  The
+        reason it is called QUIT is because you can call it from your own FORTH words in order to
+        "quit" your program and start again at the user prompt.
 
-INTERPRET is the FORTH interpreter ("toploop", "toplevel" or "REPL" might be a more accurate
-description -- see: http://en.wikipedia.org/wiki/REPL).
+        INTERPRET is the FORTH interpreter ("toploop", "toplevel" or "REPL" might be a more accurate
+        description -- see: http://en.wikipedia.org/wiki/REPL).
 *)
 
 (*
