@@ -4,7 +4,7 @@ All features exclude linux syscals are implemented.
 
 When you are starting forth learning the most interesting part is how to build forth vm from scratch.
 Jonesforth is one of the best implementations and tutorial at the same time.
-Unfortunately, it is hard sometimes to understand assembler code so fsForth is an attempt to made it clearer for developer without deep assembler knowledge.
+Unfortunately, it is hard sometimes to understand assembler code so fsForth is an attempt to made it clearer for the developer without deep assembler knowledge.
 
 You just need to open [jonesforth.fs](https://github.com/hodzanassredin/FsForth/blob/master/FsForth/jonesforth.fs) and start reading.
 
