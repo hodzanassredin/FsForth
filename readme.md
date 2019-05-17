@@ -21,3 +21,5 @@ if you want to play with forth then install dotnet core and exec run.cmd (on win
 [jonesforth](http://rwmj.wordpress.com/2010/08/07/jonesforth-git-repository/)
 
 [jonesforth github mirror](https://github.com/nornagon/jonesforth)
+
+[Forth bad parts](http://yosefk.com/blog/my-history-with-forth-stack-machines.html)
